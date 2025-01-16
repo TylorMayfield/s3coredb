@@ -44,7 +44,7 @@ describe("CollectionManager", () => {
       id: "456",
       name: "Bob",
       age: 30,
-      timestamp: new Date("2025-01-16T20:00:00.000Z"),
+      timestamp: new Date("2025-01-16T21:00:00.000Z"),
     },
   ];
 
