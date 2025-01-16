@@ -113,11 +113,17 @@ export class CollectionManager {
       
       // Filter based on query criteria
       const filtered = partitionData.filter(doc => {
-        const docTimestamp = new Date((doc as any).timestamp);
+        // Check timestamp range first if it exists
         if (query.timestamp) {
-          const { start, end } = query.timestamp;
-          if (docTimestamp < start || docTimestamp > end) return false;
+          const docTimestamp = new Date((doc as any).timestamp);
+          const start = new Date(query.timestamp.start);
+          const end = new Date(query.timestamp.end);
+          if (docTimestamp < start || docTimestamp > end) {
+            return false;
+          }
         }
+
+        // Check other query criteria
         for (const [key, value] of Object.entries(query)) {
           if (key === 'timestamp') continue;
           if ((doc as any)[key] !== value) return false;
