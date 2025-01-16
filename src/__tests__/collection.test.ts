@@ -54,12 +54,14 @@ describe("CollectionManager", () => {
 
     mockS3Client = {
       getObject: jest.fn().mockImplementation(async (path: string) => {
-        return JSON.parse(mockData[path] || '{}');
+        return JSON.parse(mockData[path] || "{}");
       }),
-      putObject: jest.fn().mockImplementation(async (path: string, data: any) => {
-        mockData[path] = JSON.stringify(data);
-        return {} as PutObjectCommandOutput;
-      }),
+      putObject: jest
+        .fn()
+        .mockImplementation(async (path: string, data: any) => {
+          mockData[path] = JSON.stringify(data);
+          return {} as PutObjectCommandOutput;
+        }),
       listObjects: jest.fn(),
       deleteObject: jest.fn(),
       getObjectMetadata: jest.fn(),
@@ -67,7 +69,7 @@ describe("CollectionManager", () => {
       s3Bucket: "test-bucket",
       s3_bucket: "test-bucket",
       s3_acl: "private",
-    } as jest.Mocked<S3Client>;
+    } as unknown as jest.Mocked<S3Client>;
 
     mockPartitionManager = {
       getPartitionKey: jest.fn(),
