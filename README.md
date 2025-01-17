@@ -26,14 +26,14 @@ Configure S3CoreDB with your S3 credentials and settings:
 ```typescript
 import { S3CoreDB } from "s3coredb";
 
-const db = new S3CoreDB({
+const db = new S3CoreDB(
   s3_key: "YOUR_ACCESS_KEY_ID",
   s3_secret: "YOUR_SECRET_ACCESS_KEY",
   s3_bucket: "your-bucket-name",
   s3_prefix: "optional/prefix",  // Optional: prefix for all S3 keys
   s3_acl: "private",            // Optional: S3 ACL setting
   s3_endpoint: "http://your-endpoint"  // Optional: custom S3-compatible endpoint
-});
+);
 ```
 
 ## Usage Examples
