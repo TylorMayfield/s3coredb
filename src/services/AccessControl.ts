@@ -1,6 +1,5 @@
 import { DataItem } from "../types/DataItem";
 import { SecurityContext } from "../types/SecurityContext";
-
 export class AccessControl {
   private securityContext?: SecurityContext;
 
@@ -12,10 +11,13 @@ export class AccessControl {
     this.securityContext = context;
   }
 
-  checkAccess(
-    item: DataItem | undefined,
-    operation: "read" | "write" | "delete"
-  ): boolean {
+  private isRoleAccessGranted(access: string, roles: string[]): boolean {
+    return (
+      access.startsWith("role:") && roles.includes(access.replace("role:", ""))
+    );
+  }
+
+  checkAccess(item: DataItem, operation: "read" | "write" | "delete"): boolean {
     if (!item?._acl || !this.securityContext) return true;
 
     const { userId, roles = [] } = this.securityContext;
@@ -23,20 +25,20 @@ export class AccessControl {
 
     if (acl.owner === userId) return true;
 
-    const accessList =
-      operation === "read"
-        ? acl.readAccess
-        : operation === "write"
-        ? acl.writeAccess
-        : acl.deleteAccess;
+    const accessMap = {
+      read: acl.readAccess,
+      write: acl.writeAccess,
+      delete: acl.deleteAccess,
+    };
+
+    const accessList = accessMap[operation];
 
     return (
       accessList?.some(
         (access) =>
           access === "*" ||
           access === userId ||
-          (access.startsWith("role:") &&
-            roles.includes(access.replace("role:", "")))
+          this.isRoleAccessGranted(access, roles)
       ) ?? false
     );
   }

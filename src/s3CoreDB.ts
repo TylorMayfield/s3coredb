@@ -1,10 +1,4 @@
-import {
-  S3Client,
-  ObjectCannedACL,
-  ListObjectsV2Command,
-  PutObjectCommand,
-  GetObjectCommand,
-} from "@aws-sdk/client-s3";
+import { ObjectCannedACL } from "@aws-sdk/client-s3";
 import { DataItem } from "./types/DataItem";
 import { SecurityContext } from "./types/SecurityContext";
 import { S3Operations } from "./services/S3Operations";
@@ -25,6 +19,9 @@ export class S3CoreDB {
     securityContext?: SecurityContext,
     shardConfig: ShardConfig = { strategy: "hash", shardCount: 10 }
   ) {
+    console.log(
+      `Initializing S3CoreDB with bucket: ${bucket}, prefix: ${prefix}`
+    );
     this.s3Operations = new S3Operations(
       accessKeyId,
       secretAccessKey,
@@ -38,21 +35,34 @@ export class S3CoreDB {
   }
 
   setSecurityContext(context: SecurityContext) {
+    console.log("Setting new security context");
     this.accessControl.setSecurityContext(context);
   }
 
   async insert(table: string, data: DataItem): Promise<string> {
+    console.log(`Inserting into table: ${table}`, { data });
     return this.s3Operations.insert(table, data);
   }
 
   async get(table: string, id: string): Promise<DataItem | null> {
+    console.log(`Getting item from table: ${table}, id: ${id}`);
     const item = await this.s3Operations.get(table, id);
-    return this.accessControl.checkAccess(item || undefined, "read")
-      ? item
-      : null;
+    console.log("Retrieved item:", item);
+
+    if (!item) {
+      console.log("Item not found");
+      return null;
+    }
+
+    const hasAccess = this.accessControl.checkAccess(item, "read");
+    console.log(`Access check result: ${hasAccess}`);
+    return hasAccess ? item : null;
   }
 
   async listShard(table: string, shard: string): Promise<string[]> {
-    return this.s3Operations.listShard(table, shard);
+    console.log(`Listing shard for table: ${table}, shard: ${shard}`);
+    const results = await this.s3Operations.listShard(table, shard);
+    console.log(`Found ${results.length} items in shard`);
+    return results;
   }
 }
