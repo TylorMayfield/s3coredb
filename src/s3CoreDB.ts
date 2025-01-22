@@ -1,64 +1,58 @@
-import { DataItem, SecurityContext, VersionMetadata } from "./types";
-import { S3Client } from "./s3Client";
-import { DataOperations } from "./dataOperations";
+import {
+  S3Client,
+  ObjectCannedACL,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  GetObjectCommand,
+} from "@aws-sdk/client-s3";
+import { DataItem } from "./types/DataItem";
+import { SecurityContext } from "./types/SecurityContext";
+import { S3Operations } from "./services/S3Operations";
+import { AccessControl } from "./services/AccessControl";
+import { ShardConfig } from "./types/ShardConfig";
 
 export class S3CoreDB {
-  private dataOps: DataOperations;
-  private s3Client: S3Client;
+  private s3Operations: S3Operations;
+  private accessControl: AccessControl;
 
   constructor(
-    s3_key: string,
-    s3_secret: string,
-    s3_bucket: string,
-    s3_prefix: string = "",
-    s3_acl: string = "private",
-    s3_endpoint?: string,
-    securityContext?: SecurityContext
+    accessKeyId: string,
+    secretAccessKey: string,
+    bucket: string,
+    prefix: string = "",
+    acl: string = "private",
+    endpoint?: string,
+    securityContext?: SecurityContext,
+    shardConfig: ShardConfig = { strategy: "hash", shardCount: 10 }
   ) {
-    this.s3Client = new S3Client(
-      s3_key,
-      s3_secret,
-      s3_bucket,
-      s3_prefix,
-      s3_acl,
-      s3_endpoint
+    this.s3Operations = new S3Operations(
+      accessKeyId,
+      secretAccessKey,
+      bucket,
+      prefix,
+      acl as ObjectCannedACL,
+      shardConfig,
+      endpoint
     );
-
-    this.dataOps = new DataOperations(this.s3Client, securityContext);
+    this.accessControl = new AccessControl(securityContext);
   }
 
   setSecurityContext(context: SecurityContext) {
-    this.dataOps.setSecurityContext(context);
+    this.accessControl.setSecurityContext(context);
   }
 
   async insert(table: string, data: DataItem): Promise<string> {
-    return this.dataOps.insert(table, data);
+    return this.s3Operations.insert(table, data);
   }
 
-  async update(table: string, data: DataItem, id: string): Promise<string> {
-    return this.dataOps.update(table, data, id);
+  async get(table: string, id: string): Promise<DataItem | null> {
+    const item = await this.s3Operations.get(table, id);
+    return this.accessControl.checkAccess(item || undefined, "read")
+      ? item
+      : null;
   }
 
-  async delete(table: string, id: string): Promise<string> {
-    return this.dataOps.delete(table, id);
-  }
-
-  async get_all(table: string): Promise<DataItem[]> {
-    return this.dataOps.get_all(table);
-  }
-
-  async get(
-    table: string,
-    id: string,
-    version?: number
-  ): Promise<DataItem | undefined> {
-    return this.dataOps.get(table, id, version);
-  }
-
-  async getVersionHistory(
-    table: string,
-    id: string
-  ): Promise<VersionMetadata[]> {
-    return this.dataOps.getVersionHistory(table, id);
+  async listShard(table: string, shard: string): Promise<string[]> {
+    return this.s3Operations.listShard(table, shard);
   }
 }

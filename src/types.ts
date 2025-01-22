@@ -1,9 +1,8 @@
-import AWS from "aws-sdk";
-
 export interface S3DBConfig {
   accessKeyId: string;
   secretAccessKey: string;
-  endpoint?: AWS.Endpoint;
+  region?: string;
+  endpoint?: string;
 }
 
 export interface DataItem {
@@ -31,7 +30,7 @@ export interface VersionMetadata {
   version: number;
   timestamp: string;
   userId: string;
-  changes: FieldChange[];
+  changes?: FieldChange[];
 }
 
 export interface FieldChange {

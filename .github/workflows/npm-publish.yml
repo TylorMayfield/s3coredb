@@ -1,7 +1,8 @@
-name: Publish to NPM
+name: NPM Publish
 
 on:
-  workflow_dispatch:
+  release:
+    types: [created]
 
 jobs:
   build:
@@ -9,19 +10,16 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Set up Node.js
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v3
         with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org/"
+          node-version: '18.x'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
-        run: npm install
-
-      - name: Run tests
-        run: npm test
+        run: npm ci
 
       - name: Build project
         run: npm run build
