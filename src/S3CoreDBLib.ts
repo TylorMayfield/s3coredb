@@ -14,6 +14,7 @@ interface S3CoreDBConfig {
   endpoint?: string;
   securityContext?: SecurityContext;
   shardConfig?: ShardConfig;
+  region?: string;
 }
 
 export class S3CoreDB {
@@ -28,6 +29,7 @@ export class S3CoreDB {
     acl = "private",
     endpoint,
     securityContext,
+    region = "us-east-2",
     shardConfig = { strategy: "hash", shardCount: 10 },
   }: S3CoreDBConfig) {
     console.log(`Initializing S3CoreDB with bucket: ${bucket}, prefix: ${prefix}`);
