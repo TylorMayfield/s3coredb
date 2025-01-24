@@ -7,6 +7,7 @@ export interface S3ClientConfig {
   };
   endpoint?: string;
   forcePathStyle?: boolean;
+  region?: 'us-east-2';
 }
 
 export const createS3Client = (config: S3ClientConfig): AWSS3Client => {
