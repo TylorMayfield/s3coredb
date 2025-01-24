@@ -16,6 +16,8 @@ export class S3Operations {
   private prefix: string;
   private acl: ObjectCannedACL;
   private shardingStrategy: ShardingStrategy;
+  private endpoint?: string;
+  private region?: string;
 
   constructor(
     accessKeyId: string,
@@ -24,7 +26,8 @@ export class S3Operations {
     prefix: string,
     acl: ObjectCannedACL,
     shardConfig: ShardConfig = { strategy: "hash", shardCount: 10 },
-    endpoint?: string
+    endpoint: string,
+    region?: 'us-east-2',
   ) {
     this.bucket = bucket;
     this.prefix = prefix;
@@ -33,6 +36,9 @@ export class S3Operations {
 
     const config: S3ClientConfig = {
       credentials: { accessKeyId, secretAccessKey },
+      region,
+      endpoint
+
     };
 
     if (endpoint) {

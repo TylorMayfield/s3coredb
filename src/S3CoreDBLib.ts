@@ -11,7 +11,7 @@ interface S3CoreDBConfig {
   bucket: string;
   prefix?: string;
   acl?: string;
-  endpoint?: string;
+  endpoint?: string | undefined;
   securityContext?: SecurityContext;
   shardConfig?: ShardConfig;
   region?: string;
@@ -27,7 +27,7 @@ export class S3CoreDB {
     bucket,
     prefix = "",
     acl = "private",
-    endpoint,
+    endpoint = "",
     securityContext,
     region = "us-east-2",
     shardConfig = { strategy: "hash", shardCount: 10 },
@@ -41,7 +41,8 @@ export class S3CoreDB {
         prefix,
         acl as ObjectCannedACL,
         shardConfig,
-        endpoint
+        endpoint,
+
       );
       this.accessControl = new AccessControl(securityContext);
     } catch (error) {
