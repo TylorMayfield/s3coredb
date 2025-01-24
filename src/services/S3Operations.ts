@@ -5,7 +5,7 @@ import {
   ObjectCannedACL,
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
-import { createS3Client, S3ClientConfig } from "../S3Client";
+import { createS3Client, S3ClientConfig } from "../S3ClientConfig";
 import { DataItem } from "../types/DataItem";
 import { generateId } from "../utils";
 import { ShardingStrategy, ShardConfig } from "./ShardingStrategy";
