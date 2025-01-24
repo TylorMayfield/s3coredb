@@ -22,16 +22,21 @@ export class S3CoreDB {
     console.log(
       `Initializing S3CoreDB with bucket: ${bucket}, prefix: ${prefix}`
     );
-    this.s3Operations = new S3Operations(
-      accessKeyId,
-      secretAccessKey,
-      bucket,
-      prefix,
-      acl as ObjectCannedACL,
-      shardConfig,
-      endpoint
-    );
-    this.accessControl = new AccessControl(securityContext);
+    try {
+      this.s3Operations = new S3Operations(
+        accessKeyId,
+        secretAccessKey,
+        bucket,
+        prefix,
+        acl as ObjectCannedACL,
+        shardConfig,
+        endpoint
+      );
+      this.accessControl = new AccessControl(securityContext);
+    } catch (error) {
+      console.error("Error initializing S3CoreDB:", error);
+      throw error;
+    }
   }
 
   setSecurityContext(context: SecurityContext) {
