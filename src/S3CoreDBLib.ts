@@ -5,23 +5,32 @@ import { S3Operations } from "./services/S3Operations";
 import { AccessControl } from "./services/AccessControl";
 import { ShardConfig } from "./types/ShardConfig";
 
+interface S3CoreDBConfig {
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucket: string;
+  prefix?: string;
+  acl?: string;
+  endpoint?: string;
+  securityContext?: SecurityContext;
+  shardConfig?: ShardConfig;
+}
+
 export class S3CoreDB {
   private s3Operations: S3Operations;
   private accessControl: AccessControl;
 
-  constructor(
-    accessKeyId: string,
-    secretAccessKey: string,
-    bucket: string,
-    prefix: string = "",
-    acl: string = "private",
-    endpoint?: string,
-    securityContext?: SecurityContext,
-    shardConfig: ShardConfig = { strategy: "hash", shardCount: 10 }
-  ) {
-    console.log(
-      `Initializing S3CoreDB with bucket: ${bucket}, prefix: ${prefix}`
-    );
+  constructor({
+    accessKeyId,
+    secretAccessKey,
+    bucket,
+    prefix = "",
+    acl = "private",
+    endpoint,
+    securityContext,
+    shardConfig = { strategy: "hash", shardCount: 10 },
+  }: S3CoreDBConfig) {
+    console.log(`Initializing S3CoreDB with bucket: ${bucket}, prefix: ${prefix}`);
     try {
       this.s3Operations = new S3Operations(
         accessKeyId,
