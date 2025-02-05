@@ -1,4 +1,1 @@
-export * from "./types";
-export * from "./S3ClientConfig";
-export * from "./S3CoreDBLib";
-export * from "./services/S3Operations";
+export { S3CoreDB } from "./S3CoreDB";

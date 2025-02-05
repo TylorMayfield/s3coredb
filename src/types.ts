@@ -1,41 +1,37 @@
-export interface S3DBConfig {
+import { S3Client } from "@aws-sdk/client-s3";
+
+interface S3CoreDBConfig {
+  endpoint: string;
   accessKeyId: string;
   secretAccessKey: string;
   region?: string;
-  endpoint?: string;
+  bucket: string;
+  s3ForcePathStyle?: boolean;
 }
 
-export interface DataItem {
-  _id: string;
-  _acl?: AccessControl;
-  _version?: number;
-  _lastModified?: string;
-  _history?: VersionMetadata[];
-  [key: string]: any;
+interface Relationship {
+  from: string;
+  to: string;
+  type: string;
 }
 
-export interface AccessControl {
-  owner: string;
-  readAccess?: string[];
-  writeAccess?: string[];
-  deleteAccess?: string[];
+interface Node {
+  id: string;
+  type: string;
+  properties: any;
 }
 
-export interface SecurityContext {
-  userId: string;
-  roles?: string[];
+interface StorageAdapter {
+  createNode(node: Node): Promise<Node>;
+  getNode(id: string): Promise<Node | null>;
+  getNodeTypeFromId(id: string): Promise<string | null>;
+  queryNodes(query: any): Promise<Node[]>;
+  createRelationship(relationship: Relationship): Promise<void>;
+  queryRelatedNodes(
+    from: string,
+    type: string,
+    options?: { direction?: "IN" | "OUT" }
+  ): Promise<Node[]>;
 }
 
-export interface VersionMetadata {
-  version: number;
-  timestamp: string;
-  userId: string;
-  changes?: FieldChange[];
-}
-
-export interface FieldChange {
-  field: string;
-  oldValue: any;
-  newValue: any;
-  type: "add" | "modify" | "delete";
-}
+export { S3CoreDBConfig, Relationship, Node, StorageAdapter };
