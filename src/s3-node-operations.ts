@@ -4,7 +4,8 @@ import {
   PutObjectCommand,
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
-import { Node, S3CoreDBConfig } from "./types";
+import { Node, S3CoreDBConfig, AuthContext } from "./types";
+import { logger } from './logger';
 
 class S3NodeOperations {
   private s3: S3Client;
@@ -24,7 +25,18 @@ class S3NodeOperations {
     this.bucket = config.bucket;
   }
 
-  async createNode(node: Node): Promise<Node> {
+  async createNode(node: Node, auth: AuthContext): Promise<Node> {
+    // Validate permissions
+    if (!this.canCreateWithPermissions(node.permissions, auth)) {
+      logger.error('Permission denied for node creation', { 
+        nodeId: node.id,
+        nodeType: node.type,
+        userPermissions: auth.userPermissions,
+        requiredPermissions: node.permissions
+      });
+      throw new Error("Permission denied: Insufficient permissions to create node");
+    }
+
     const params = {
       Bucket: this.bucket,
       Key: `${node.type}/${node.id}.json`,
@@ -35,17 +47,23 @@ class S3NodeOperations {
     try {
       const command = new PutObjectCommand(params);
       await this.s3.send(command);
+      logger.info('Node created successfully', { nodeId: node.id, nodeType: node.type });
       return node;
     } catch (error) {
-      console.error("Error creating node:", error);
+      logger.error('Error creating node', { 
+        nodeId: node.id, 
+        nodeType: node.type, 
+        error: error instanceof Error ? error.message : String(error) 
+      });
       throw error;
     }
   }
 
-  async getNode(id: string): Promise<Node | null> {
+  async getNode(id: string, auth: AuthContext): Promise<Node | null> {
     try {
       const nodeType = await this.getNodeTypeFromId(id);
       if (!nodeType) {
+        logger.info('Node type not found for ID', { nodeId: id });
         return null;
       }
       const params = {
@@ -56,12 +74,30 @@ class S3NodeOperations {
       const data = await this.s3.send(command);
       const bodyContents = await data.Body?.transformToString();
       if (bodyContents) {
-        return JSON.parse(bodyContents);
+        const node = JSON.parse(bodyContents);
+        
+        // Check permissions before returning the node
+        if (!this.canAccessNode(node, auth)) {
+          logger.warn('Permission denied for node access', { 
+            nodeId: id, 
+            nodeType,
+            userPermissions: auth.userPermissions,
+            nodePermissions: node.permissions
+          });
+          return null;
+        }
+        
+        logger.info('Node retrieved successfully', { nodeId: id, nodeType });
+        return node;
       } else {
+        logger.warn('Node body empty', { nodeId: id, nodeType });
         return null;
       }
     } catch (error) {
-      console.error("Error getting node:", error);
+      logger.error('Error getting node', { 
+        nodeId: id, 
+        error: error instanceof Error ? error.message : String(error) 
+      });
       return null;
     }
   }
@@ -92,9 +128,11 @@ class S3NodeOperations {
               );
               if (getObjectResult?.$metadata?.httpStatusCode === 200) {
                 nodeType = prefix.Prefix.slice(0, -1);
+                logger.debug('Found node type', { nodeId: id, nodeType });
                 return nodeType; // Exit the inner loop since we found the node
               }
             } catch (error) {
+              logger.debug('Node type not found', { nodeId: id, prefix: prefix.Prefix });
               return null; //Handle 404 and other errors by returning null.
             }
           }
@@ -109,7 +147,7 @@ class S3NodeOperations {
     return nodeType;
   }
 
-  async queryNodes(query: any): Promise<Node[]> {
+  async queryNodes(query: any, auth: AuthContext): Promise<Node[]> {
     const results: Node[] = [];
     const prefixParams = {
       Bucket: this.bucket,
@@ -147,31 +185,47 @@ class S3NodeOperations {
                       const bodyContents = await data.Body?.transformToString();
                       if (bodyContents) {
                         const node = JSON.parse(bodyContents);
-                        if (this.matchesQuery(node, query)) {
+                        // Only include nodes that match both the query and permissions
+                        if (this.matchesQuery(node, query) && this.canAccessNode(node, auth)) {
                           results.push(node);
                         }
                       }
                     } catch (error) {
-                      console.error(
-                        `Failed to get object: ${object.Key}, Error:`,
-                        error
-                      );
+                      logger.error('Failed to get object', { 
+                        key: object.Key, 
+                        error: error instanceof Error ? error.message : String(error) 
+                      });
                     }
                   }
                 }
               }
             } catch (error) {
-              console.error(
-                `Failed to list objects under prefix ${prefix.Prefix}`,
-                error
-              );
+              logger.error('Failed to list objects', { 
+                prefix: prefix.Prefix, 
+                error: error instanceof Error ? error.message : String(error) 
+              });
             }
           }
         }
       }
     } while (prefixData.NextContinuationToken !== undefined);
 
+    logger.info('Query completed', { 
+      queryParams: query, 
+      resultCount: results.length,
+      userPermissions: auth.userPermissions
+    });
     return results;
+  }
+
+  private canCreateWithPermissions(requiredPermissions: string[], auth: AuthContext): boolean {
+    if (auth.isAdmin) return true;
+    return requiredPermissions.some(perm => auth.userPermissions.includes(perm));
+  }
+
+  private canAccessNode(node: Node, auth: AuthContext): boolean {
+    if (auth.isAdmin) return true;
+    return node.permissions.some(perm => auth.userPermissions.includes(perm));
   }
 
   private matchesQuery(node: Node, query: any): boolean {

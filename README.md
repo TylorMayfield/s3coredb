@@ -1,149 +1,79 @@
 # S3CoreDB
 
-A TypeScript library for using S3-compatible storage as a scalable, relational, node-based database with built-in indexing, access control, and individual object storage.
+A simple node-based database using S3-compatible storage.
 
-## Introduction
+## Quick Start
 
-S3CoreDB leverages the power and scalability of S3-compatible object storage to provide a flexible and cost-effective solution for storing and querying relational data. It stores each data object (node) as a separate JSON file within your S3 bucket, enabling efficient retrieval and management. It offers features like node-based relationships, indexing for fast lookups, and granular access control. It's designed to work with various S3 providers, giving you flexibility in your infrastructure choices.
-
-## Features
-
-- **Relational Node-Based Database:** Store data as interconnected nodes with relationships, enabling complex data structures.
-- **Scalability:** Built on S3-compatible storage, S3CoreDB scales effortlessly to handle growing data needs.
-- **Indexing:** Built-in indexing capabilities ensure fast and efficient data retrieval.
-- **Access Control:** Fine-grained access control mechanisms to secure your data.
-- **Individual Object Storage:** Each data object (node) is stored as its own JSON file for efficient management.
-- **TypeScript Support:** Fully typed for a seamless development experience.
-- **S3-Compatible:** Works with various S3 providers (AWS, MinIO, Ceph, etc.).
-
-## Installation
+### Install
 
 ```bash
 npm install s3coredb
 ```
 
-## Usage
-
-### Connecting to S3CoreDB
+### Connect
 
 ```typescript
 import { S3CoreDB } from "s3coredb";
 
 const db = new S3CoreDB({
-  endpoint: "YOUR_S3_ENDPOINT", // e.g., 's3.amazonaws.com', 'play.min.io:9000'
-  accessKeyId: "YOUR_ACCESS_KEY_ID",
-  secretAccessKey: "YOUR_SECRET_ACCESS_KEY",
-  region: "YOUR_S3_REGION", // Optional, depends on the provider
-  bucket: "YOUR_S3_BUCKET_NAME", // The main bucket for metadata and objects
-  s3ForcePathStyle: true, // Required for MinIO and some other providers
+  endpoint: "YOUR_S3_ENDPOINT",      // e.g., 's3.amazonaws.com'
+  accessKeyId: "YOUR_KEY",
+  secretAccessKey: "YOUR_SECRET",
+  bucket: "YOUR_BUCKET",
+  s3ForcePathStyle: true            // Required for MinIO
 });
 ```
 
-### Creating Nodes
+### Basic Usage
 
 ```typescript
-const userNode = await db.createNode({
+// Create a user node
+const user = await db.createNode({
   type: "user",
   properties: {
-    name: "John Doe",
-    email: "johndoe@example.com",
-  },
+    name: "John",
+    email: "john@example.com"
+  }
 });
 
-const productNode = await db.createNode({
+// Create a product node
+const product = await db.createNode({
   type: "product",
   properties: {
-    name: "Awesome Widget",
-    price: 29.99,
-  },
+    name: "Cool Widget",
+    price: 19.99
+  }
 });
 
-const reviewNode = await db.createNode({
-  type: "review",
-  properties: {
-    rating: 5,
-    text: "This widget is amazing!",
-  },
+// Create a relationship (user purchased product)
+await db.createRelationship({
+  from: user.id,
+  to: product.id,
+  type: "PURCHASED"
 });
 
-console.log(userNode.id); // Unique ID of the created user node
-console.log(productNode.id); // Unique ID of the created product node
-console.log(reviewNode.id); // Unique ID of the created review node
-```
+// Get a node by ID
+const foundUser = await db.getNode(user.id);
 
-### Creating Relationships
-
-```typescript
-// User "John Doe" purchased "Awesome Widget"
-await db.createRelationship(userNode.id, productNode.id, "PURCHASED");
-
-// User "John Doe" wrote a review for "Awesome Widget"
-await db.createRelationship(userNode.id, reviewNode.id, "WROTE_REVIEW");
-
-// "Awesome Widget" has a review
-await db.createRelationship(productNode.id, reviewNode.id, "HAS_REVIEW");
-```
-
-### Retrieving a Node
-
-```typescript
-const retrievedUserNode = await db.getNode(userNode.id);
-console.log(retrievedUserNode.properties.name); // Output: John Doe
-```
-
-### Querying Nodes
-
-#### Example 1: Finding users with a specific name
-
-```typescript
+// Query nodes
 const users = await db.queryNodes({
   type: "user",
-  "properties.name": "John Doe", // Conditional query
+  "properties.name": "John"
 });
-console.log(users);
+
+// Find related nodes
+const purchases = await db.queryRelatedNodes(user.id, "PURCHASED");
 ```
 
-#### Example 2: Finding users created after a certain date (if you have a createdAt property)
+## Features
 
-```typescript
-const recentUsers = await db.queryNodes({
-  type: "user",
-  "properties.createdAt": { $gt: "2024-01-01" }, // Example using a greater-than condition
-});
-console.log(recentUsers);
-```
+- Store data as nodes with relationships
+- Works with any S3-compatible storage
+- TypeScript support
+- Simple querying
+- Built-in indexing
+- Access control
 
-#### Example 3: Finding users with a specific email domain
+## Need More?
 
-```typescript
-const usersWithSpecificDomain = await db.queryNodes({
-  type: "user",
-  "properties.email": { regex: "@example.com" }, // Example using regular expression
-});
-console.log(usersWithSpecificDomain);
-```
-
-#### Example 4: Finding products purchased by a user
-
-```typescript
-const products = await db.queryRelatedNodes(userNode.id, "PURCHASED"); // Get related products
-console.log(products);
-```
-
-#### Example 5: Finding reviews written by a user
-
-```typescript
-const reviews = await db.queryRelatedNodes(userNode.id, "WROTE_REVIEW");
-console.log(reviews);
-```
-
-#### Example 6: Finding the user who wrote a review
-
-```typescript
-const userWhoReviewed = await db.queryRelatedNodes(
-  reviewNode.id,
-  "WROTE_REVIEW",
-  { direction: "IN" }
-);
-console.log(userWhoReviewed);
-```
+Check out our [GitHub repository](https://github.com/yourusername/s3coredb) for detailed documentation, examples, and advanced features.
