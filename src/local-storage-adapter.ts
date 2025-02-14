@@ -49,7 +49,6 @@ class LocalStorageAdapter implements StorageAdapter {
       throw new Error("Permission denied: Insufficient permissions to create relationship");
     }
 
-    // Store relationships with a delimiter that won't appear in UUIDs
     const key = `${from}|${to}|${type}`;
     const relationships: any[] = Array.isArray(this.relationships.get(key)) ? (this.relationships.get(key) as any[]) : [];
     relationships.push(relationship);
@@ -93,7 +92,21 @@ class LocalStorageAdapter implements StorageAdapter {
         // Handle nested properties
         const queryValue = query[key];
         const nodeValue = this.getNestedValue(node, key);
-        if (queryValue !== nodeValue) {
+        
+        // Handle array values
+        if (Array.isArray(nodeValue)) {
+          if (Array.isArray(queryValue)) {
+            // Check if arrays have at least one common element
+            if (!queryValue.some(v => nodeValue.includes(v))) {
+              return false;
+            }
+          } else {
+            // Single value to match against array
+            if (!nodeValue.includes(queryValue)) {
+              return false;
+            }
+          }
+        } else if (queryValue !== nodeValue) {
           return false;
         }
       } else {
