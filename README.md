@@ -99,4 +99,4 @@ Check out our [examples directory](examples/) for complete implementations, incl
 
 ## Need Help?
 
-Visit our [GitHub repository](https://github.com/yourusername/s3coredb) for detailed documentation and more examples.
+Visit our [GitHub repository](https://github.com/TylorMayfield/s3coredb) for detailed documentation and more examples.
