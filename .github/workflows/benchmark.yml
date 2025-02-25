@@ -25,10 +25,3 @@ jobs:
     - name: Run benchmark
       run: npx ts-node examples/benchmark-poc.ts
       
-    - name: Store benchmark results
-      if: success()
-      uses: actions/upload-artifact@v3
-      with:
-        name: benchmark-results
-        path: benchmark-data/
-        retention-days: 90
