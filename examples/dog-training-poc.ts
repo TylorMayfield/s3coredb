@@ -10,6 +10,12 @@ logger.level = 'warn';
 async function main() {
     // Initialize the storage adapter and database
     const adapter = new FileSystemStorageAdapter('db-data');
+    // Configure cache settings through the base adapter
+    adapter.configureCacheOptions({
+        ttl: 10 * 60 * 1000, // 10 minutes cache TTL
+        maxSize: 1000 // Cache up to 1000 entries
+    });
+
     const db = new S3CoreDB({
         // Using filesystem adapter doesn't need S3 config
         endpoint: "",
@@ -344,6 +350,53 @@ async function main() {
         } else {
             console.log("No session statistics available");
         }
+
+        console.log("📊 Cache Performance Demo");
+        console.log("\nFirst query - uncached:");
+        console.time('uncached');
+        const initialDogs = await db.queryNodes({
+            type: "dog",
+            "properties.breed": "Golden Retriever"
+        }, readAuth);
+        console.timeEnd('uncached');
+
+        console.log("\nSecond query - should use cache:");
+        console.time('cached');
+        const cachedDogs = await db.queryNodes({
+            type: "dog",
+            "properties.breed": "Golden Retriever"
+        }, readAuth);
+        console.timeEnd('cached');
+
+        // Property-based index example
+        console.log("\nQuerying dogs by breed (using property index):");
+        console.time('indexed-query');
+        const goldenRetrievers = await db.queryNodesAdvanced({
+            filter: {
+                logic: 'and',
+                filters: [
+                    { field: 'type', operator: 'eq', value: 'dog' },
+                    { field: 'properties.breed', operator: 'eq', value: 'Golden Retriever' }
+                ]
+            }
+        }, readAuth);
+        console.timeEnd('indexed-query');
+
+        // Relationship traversal with caching
+        console.log("\nTraversing relationships (with caching):");
+        console.time('relationship-traversal');
+        const dogOwners = await Promise.all(
+            goldenRetrievers.items.map(async dog => {
+                const owners = await db.queryRelatedNodes(dog.id, "OWNS", readAuth, { direction: "IN" });
+                return { dog, owners };
+            })
+        );
+        console.timeEnd('relationship-traversal');
+
+        // Display results
+        dogOwners.forEach(({ dog, owners }) => {
+            console.log(`${dog.properties.name} is owned by: ${owners.map(o => o.properties.name).join(', ')}`);
+        });
 
     } catch (error) {
         console.error("Error in dog training POC:", error);

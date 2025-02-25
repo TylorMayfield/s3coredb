@@ -67,6 +67,12 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         await this.initialized;
         logger.info(`Fetching node with id: ${id}`);
         
+        // Try cache first
+        const cachedNode = await this.getCachedNode(id, auth);
+        if (cachedNode) {
+            return cachedNode;
+        }
+        
         try {
             // Since we don't know the type, we need to search in all type directories
             const typeDirectories = await fs.readdir(this.nodesDir);
@@ -77,6 +83,7 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
                     const data = await fs.readFile(possiblePath, 'utf8');
                     const node = JSON.parse(data) as Node;
                     if (this.canAccessNode(node, auth)) {
+                        this.cache.cacheNode(node);
                         return node;
                     }
                 } catch (error) {
@@ -102,6 +109,21 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         const results = new Map<string, Node>();
 
         try {
+            // Use type index if available
+            if (query.type) {
+                const cachedTypeNodes = this.cache.queryNodesByType(query.type);
+                if (cachedTypeNodes.size > 0) {
+                    for (const nodeId of cachedTypeNodes) {
+                        const node = await this.getNode(nodeId, auth);
+                        if (node && this.matchesQuery(node, query)) {
+                            results.set(node.id, node);
+                        }
+                    }
+                    return Array.from(results.values());
+                }
+            }
+
+            // Fallback to filesystem search
             const typeDirectories = await fs.readdir(this.nodesDir);
             
             // If query has a type, only search in that type's directory
@@ -118,6 +140,7 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
                         const data = await fs.readFile(path.join(typePath, file), 'utf8');
                         const node = JSON.parse(data) as Node;
                         if (this.matchesQuery(node, query) && this.canAccessNode(node, auth)) {
+                            this.cache.cacheNode(node);
                             results.set(node.id, node);
                         }
                     }
@@ -310,10 +333,18 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
             for (const file of files) {
                 if (!file.endsWith('.json')) continue;
 
-                const relationshipData = await fs.readFile(path.join(typeDir, file), 'utf8');
-                const relationship = JSON.parse(relationshipData) as Relationship;
-
+                // Try cache first for relationship
                 const [fromId, toId] = file.slice(0, -5).split('__');
+                const cachedRel = await this.getCachedRelationship(fromId, toId, type);
+                
+                let relationship: Relationship;
+                if (cachedRel) {
+                    relationship = cachedRel;
+                } else {
+                    const relationshipData = await fs.readFile(path.join(typeDir, file), 'utf8');
+                    relationship = JSON.parse(relationshipData) as Relationship;
+                    this.cache.cacheRelationship(relationship);
+                }
                 
                 if (this.matchesRelationshipQuery(relationship, from, type, options?.direction)) {
                     const targetId = options?.direction === "IN" ? fromId : toId;
