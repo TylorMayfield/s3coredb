@@ -16,6 +16,7 @@
   "description": "",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.732.0",
+    "ts-node": "^10.9.2",
     "winston": "^3.17.0"
   },
   "devDependencies": {

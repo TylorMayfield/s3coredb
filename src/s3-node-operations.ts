@@ -3,11 +3,12 @@ import {
   GetObjectCommand,
   PutObjectCommand,
   ListObjectsV2Command,
+  DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
 import { Node, S3CoreDBConfig, AuthContext } from "./types";
 import { logger } from './logger';
 
-class S3NodeOperations {
+export class S3NodeOperations {
   private s3: S3Client;
   private bucket: string;
 
@@ -25,8 +26,15 @@ class S3NodeOperations {
     this.bucket = config.bucket;
   }
 
+  private getNodeKey(node: Node): string {
+    return `nodes/${node.type}/${node.id}.json`;
+  }
+
+  private getNodeKeyFromId(type: string, id: string): string {
+    return `nodes/${type}/${id}.json`;
+  }
+
   async createNode(node: Node, auth: AuthContext): Promise<Node> {
-    // Validate permissions
     if (!this.canCreateWithPermissions(node.permissions, auth)) {
       logger.error('Permission denied for node creation', { 
         nodeId: node.id,
@@ -39,7 +47,7 @@ class S3NodeOperations {
 
     const params = {
       Bucket: this.bucket,
-      Key: `${node.type}/${node.id}.json`,
+      Key: this.getNodeKey(node),
       Body: JSON.stringify(node),
       ContentType: "application/json",
     };
@@ -66,17 +74,18 @@ class S3NodeOperations {
         logger.info('Node type not found for ID', { nodeId: id });
         return null;
       }
+
       const params = {
         Bucket: this.bucket,
-        Key: `${nodeType}/${id}.json`,
+        Key: this.getNodeKeyFromId(nodeType, id),
       };
+
       const command = new GetObjectCommand(params);
       const data = await this.s3.send(command);
       const bodyContents = await data.Body?.transformToString();
       if (bodyContents) {
         const node = JSON.parse(bodyContents);
         
-        // Check permissions before returning the node
         if (!this.canAccessNode(node, auth)) {
           logger.warn('Permission denied for node access', { 
             nodeId: id, 
@@ -105,110 +114,107 @@ class S3NodeOperations {
   async getNodeTypeFromId(id: string): Promise<string | null> {
     const prefixParams = {
       Bucket: this.bucket,
-      Prefix: "/",
+      Prefix: "nodes/",
       Delimiter: "/",
     };
-    let nodeType: string | null = null;
-    let prefixData: any;
 
-    do {
-      prefixData = await this.s3.send(new ListObjectsV2Command(prefixParams));
+    try {
+      const typesResponse = await this.s3.send(new ListObjectsV2Command(prefixParams));
+      if (!typesResponse.CommonPrefixes) return null;
 
-      if (prefixData.CommonPrefixes) {
-        for (const prefix of prefixData.CommonPrefixes) {
-          if (prefix.Prefix) {
-            const key = `${prefix.Prefix}${id}.json`;
-            const getParams = {
+      for (const typePrefix of typesResponse.CommonPrefixes) {
+        if (!typePrefix.Prefix) continue;
+        
+        const type = typePrefix.Prefix.replace('nodes/', '').replace('/', '');
+        const nodeKey = this.getNodeKeyFromId(type, id);
+        
+        try {
+          const getObjectResult = await this.s3.send(
+            new GetObjectCommand({
               Bucket: this.bucket,
-              Key: key,
-            };
-            try {
-              const getObjectResult = await this.s3.send(
-                new GetObjectCommand(getParams)
-              );
-              if (getObjectResult?.$metadata?.httpStatusCode === 200) {
-                nodeType = prefix.Prefix.slice(0, -1);
-                logger.debug('Found node type', { nodeId: id, nodeType });
-                return nodeType; // Exit the inner loop since we found the node
-              }
-            } catch (error) {
-              logger.debug('Node type not found', { nodeId: id, prefix: prefix.Prefix });
-              return null; //Handle 404 and other errors by returning null.
-            }
+              Key: nodeKey,
+            })
+          );
+          if (getObjectResult.$metadata.httpStatusCode === 200) {
+            logger.debug('Found node type', { nodeId: id, nodeType: type });
+            return type;
           }
+        } catch (error) {
+          continue; // Node not found in this type directory
         }
       }
 
-      if (nodeType) {
-        break;
-      }
-    } while (prefixData.NextContinuationToken !== undefined);
-
-    return nodeType;
+      logger.debug('Node type not found', { nodeId: id });
+      return null;
+    } catch (error) {
+      logger.error('Error getting node type', { 
+        nodeId: id, 
+        error: error instanceof Error ? error.message : String(error) 
+      });
+      return null;
+    }
   }
 
   async queryNodes(query: any, auth: AuthContext): Promise<Node[]> {
     const results: Node[] = [];
-    const prefixParams = {
-      Bucket: this.bucket,
-      Prefix: "/",
-      Delimiter: "/",
-    };
 
-    let prefixData: any;
-    do {
-      prefixData = await this.s3.send(new ListObjectsV2Command(prefixParams));
+    try {
+      // List all type directories under nodes/
+      const typesResponse = await this.s3.send(new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: "nodes/",
+        Delimiter: "/"
+      }));
 
-      if (prefixData.CommonPrefixes) {
-        for (const prefix of prefixData.CommonPrefixes) {
-          if (prefix.Prefix) {
-            const listParams = {
-              Bucket: this.bucket,
-              Prefix: prefix.Prefix,
-            };
+      if (!typesResponse.CommonPrefixes) return [];
 
-            try {
-              const listedObjects = await this.s3.send(
-                new ListObjectsV2Command(listParams)
-              );
+      // If type is specified in query, only search that type's directory
+      const prefixesToSearch = query.type 
+        ? [typesResponse.CommonPrefixes.find(p => p.Prefix === `nodes/${query.type}/`)].filter(Boolean)
+        : typesResponse.CommonPrefixes;
 
-              if (listedObjects.Contents) {
-                for (const object of listedObjects.Contents) {
-                  if (object.Key) {
-                    try {
-                      const data = await this.s3.send(
-                        new GetObjectCommand({
-                          Bucket: this.bucket,
-                          Key: object.Key,
-                        })
-                      );
-                      const bodyContents = await data.Body?.transformToString();
-                      if (bodyContents) {
-                        const node = JSON.parse(bodyContents);
-                        // Only include nodes that match both the query and permissions
-                        if (this.matchesQuery(node, query) && this.canAccessNode(node, auth)) {
-                          results.push(node);
-                        }
-                      }
-                    } catch (error) {
-                      logger.error('Failed to get object', { 
-                        key: object.Key, 
-                        error: error instanceof Error ? error.message : String(error) 
-                      });
-                    }
-                  }
-                }
+      for (const prefix of prefixesToSearch) {
+        // Add type guard for prefix
+        if (!prefix?.Prefix) continue;
+
+        const listParams = {
+          Bucket: this.bucket,
+          Prefix: prefix.Prefix
+        };
+
+        const listedObjects = await this.s3.send(new ListObjectsV2Command(listParams));
+        if (!listedObjects.Contents) continue;
+
+        for (const object of listedObjects.Contents) {
+          if (!object.Key || !object.Key.endsWith('.json')) continue;
+
+          try {
+            const data = await this.s3.send(
+              new GetObjectCommand({
+                Bucket: this.bucket,
+                Key: object.Key,
+              })
+            );
+            const bodyContents = await data.Body?.transformToString();
+            if (bodyContents) {
+              const node = JSON.parse(bodyContents);
+              if (this.matchesQuery(node, query) && this.canAccessNode(node, auth)) {
+                results.push(node);
               }
-            } catch (error) {
-              logger.error('Failed to list objects', { 
-                prefix: prefix.Prefix, 
-                error: error instanceof Error ? error.message : String(error) 
-              });
             }
+          } catch (error) {
+            logger.error('Failed to get object', { 
+              key: object.Key, 
+              error: error instanceof Error ? error.message : String(error) 
+            });
           }
         }
       }
-    } while (prefixData.NextContinuationToken !== undefined);
+    } catch (error) {
+      logger.error('Error querying nodes', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
+    }
 
     logger.info('Query completed', { 
       queryParams: query, 
@@ -216,6 +222,88 @@ class S3NodeOperations {
       userPermissions: auth.userPermissions
     });
     return results;
+  }
+
+  async listNodeTypes(): Promise<string[]> {
+    try {
+      const typesResponse = await this.s3.send(new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: "nodes/",
+        Delimiter: "/"
+      }));
+
+      if (!typesResponse.CommonPrefixes) return [];
+
+      return typesResponse.CommonPrefixes
+        .map(prefix => prefix.Prefix)
+        .filter((prefix): prefix is string => !!prefix)
+        .map(prefix => prefix.replace('nodes/', '').replace('/', ''));
+    } catch (error) {
+      logger.error('Error listing node types', { 
+        error: error instanceof Error ? error.message : String(error) 
+      });
+      return [];
+    }
+  }
+
+  async listNodesOfType(type: string): Promise<Node[]> {
+    try {
+      const listParams = {
+        Bucket: this.bucket,
+        Prefix: `nodes/${type}/`
+      };
+
+      const listedObjects = await this.s3.send(new ListObjectsV2Command(listParams));
+      if (!listedObjects.Contents) return [];
+
+      const nodes: Node[] = [];
+      for (const object of listedObjects.Contents) {
+        if (!object.Key?.endsWith('.json')) continue;
+
+        try {
+          const data = await this.s3.send(
+            new GetObjectCommand({
+              Bucket: this.bucket,
+              Key: object.Key,
+            })
+          );
+          const bodyContents = await data.Body?.transformToString();
+          if (bodyContents) {
+            nodes.push(JSON.parse(bodyContents));
+          }
+        } catch (error) {
+          logger.error('Failed to get object', { 
+            key: object.Key, 
+            error: error instanceof Error ? error.message : String(error) 
+          });
+        }
+      }
+      return nodes;
+    } catch (error) {
+      logger.error('Error listing nodes of type', { 
+        type,
+        error: error instanceof Error ? error.message : String(error) 
+      });
+      return [];
+    }
+  }
+
+  async deleteNode(node: Node): Promise<void> {
+    try {
+      const key = this.getNodeKey(node);
+      await this.s3.send(new DeleteObjectCommand({
+        Bucket: this.bucket,
+        Key: key
+      }));
+      logger.info('Node deleted', { nodeId: node.id, nodeType: node.type });
+    } catch (error) {
+      logger.error('Error deleting node', { 
+        nodeId: node.id,
+        nodeType: node.type,
+        error: error instanceof Error ? error.message : String(error) 
+      });
+      throw error;
+    }
   }
 
   private canCreateWithPermissions(requiredPermissions: string[], auth: AuthContext): boolean {
@@ -229,38 +317,15 @@ class S3NodeOperations {
   }
 
   private matchesQuery(node: Node, query: any): boolean {
-    if (!query) {
-      return true;
-    }
+    if (!query) return true;
+    
     for (const key in query) {
       if (query.hasOwnProperty(key)) {
-        const queryValue = this.getNestedValue(query, key);
-        const nodeValue = this.getNestedValue(node, key);
-
-        if (queryValue instanceof RegExp) {
-          if (typeof nodeValue !== "string" || !queryValue.test(nodeValue)) {
-            return false;
-          }
-        } else if (Array.isArray(queryValue)) {
-          if (
-            !Array.isArray(nodeValue) ||
-            !queryValue.every((item) => nodeValue.includes(item))
-          ) {
-            return false;
-          }
-        } else if (nodeValue !== queryValue) {
+        if (!(key in node) || node[key as keyof Node] !== query[key]) {
           return false;
         }
       }
     }
     return true;
   }
-
-  private getNestedValue(obj: any, path: string): any {
-    return path
-      .split(".")
-      .reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), obj);
-  }
 }
-
-export { S3NodeOperations };
