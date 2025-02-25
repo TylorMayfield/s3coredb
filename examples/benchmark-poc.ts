@@ -58,7 +58,7 @@ async function main() {
     db.setDefaultAuthContext(auth);
 
     const results: BenchmarkResults[] = [];
-    const datasetSizes = [1, 10, 100, 1000, 10000]; // Sizes in records
+    const datasetSizes = [1000, 10000, 100000]; // Sizes in records
     console.log("📊 Starting benchmarks...");
 
     try {
@@ -90,23 +90,7 @@ async function main() {
                 duration: createDuration,
                 recordsPerSecond: (size / (createDuration / 1000))
             });
-
-            // Benchmark simple queries
-            const queryDuration = await runBenchmark(`Running ${formatNumber(size / 10)} simple queries`, async () => {
-                for (let i = 0; i < size / 10; i++) {
-                    const userId = Math.floor(Math.random() * size);
-                    await db.queryNodes({
-                        type: "user",
-                        "properties.id": `user${userId}`
-                    }, auth);
-                }
-            });
-            results.push({
-                operation: "Simple Queries",
-                recordCount: size / 10,
-                duration: queryDuration,
-                recordsPerSecond: ((size / 10) / (queryDuration / 1000))
-            });
+            console.log(`✅ Created ${formatNumber(size)} users in ${formatDuration(createDuration)}`);
 
             // Benchmark complex queries
             const complexQueryDuration = await runBenchmark(`Running complex queries on ${formatNumber(size)} records`, async () => {
@@ -129,9 +113,10 @@ async function main() {
                 duration: complexQueryDuration,
                 recordsPerSecond: (size / (complexQueryDuration / 1000))
             });
+            console.log(`✅ Completed complex query in ${formatDuration(complexQueryDuration)}`);
 
             // Create relationships between random users
-            const relationshipCount = Math.floor(size * 0.1); // 10% of total nodes
+            const relationshipCount = Math.floor(size * 0.5); // 5% of total nodes
             const relationshipDuration = await runBenchmark(`Creating ${formatNumber(relationshipCount)} relationships`, async () => {
                 for (let i = 0; i < relationshipCount; i++) {
                     const fromNode = userNodes[Math.floor(Math.random() * userNodes.length)];
@@ -157,6 +142,7 @@ async function main() {
                 duration: relationshipDuration,
                 recordsPerSecond: (relationshipCount / (relationshipDuration / 1000))
             });
+            console.log(`✅ Created ${formatNumber(relationshipCount)} relationships in ${formatDuration(relationshipDuration)}`);
 
             // Benchmark relationship traversal
             const traversalDuration = await runBenchmark(`Traversing relationships for ${formatNumber(size / 100)} users`, async () => {
@@ -171,6 +157,7 @@ async function main() {
                 duration: traversalDuration,
                 recordsPerSecond: ((size / 100) / (traversalDuration / 1000))
             });
+            console.log(`✅ Completed relationship traversal in ${formatDuration(traversalDuration)}`);
         }
 
         // Print summary
