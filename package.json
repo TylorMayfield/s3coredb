@@ -9,7 +9,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "poc": "ts-node examples/social-network-poc.ts"
+    "poc": "ts-node examples/social-network-poc.ts",
+    "benchmark": "ts-node examples/benchmark-poc.ts"
   },
   "author": "",
   "license": "ISC",

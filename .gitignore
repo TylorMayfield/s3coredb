@@ -5,3 +5,4 @@ test.js
 /dist
 test-report.html
 /db-data
+/benchmark-data
