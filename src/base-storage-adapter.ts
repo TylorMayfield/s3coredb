@@ -1,4 +1,4 @@
-import { Node, AuthContext, StorageAdapter, Relationship } from "./types";
+import { Node, Relationship, StorageAdapter, AuthContext, QueryOptions, QueryResult } from './types';
 import { logger } from './logger';
 
 export abstract class BaseStorageAdapter implements StorageAdapter {
@@ -13,6 +13,8 @@ export abstract class BaseStorageAdapter implements StorageAdapter {
         auth: AuthContext,
         options?: { direction?: "IN" | "OUT" }
     ): Promise<Node[]>;
+
+    abstract queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult>;
 
     protected matchesQuery(node: Node, query: any): boolean {
         for (const key in query) {

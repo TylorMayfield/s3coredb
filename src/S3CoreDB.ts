@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { Node, S3CoreDBConfig, StorageAdapter, Relationship, AuthContext } from "./types";
+import { Node, S3CoreDBConfig, StorageAdapter, Relationship, AuthContext, QueryOptions, QueryResult } from "./types";
 import { logger } from './logger';
 
 class S3CoreDB {
@@ -61,6 +61,10 @@ class S3CoreDB {
     const authContext = this.getAuthContext(auth);
     logger.info('Querying nodes', { query });
     return this.storage.queryNodes(query, authContext);
+  }
+
+  async queryNodesAdvanced(options: QueryOptions, auth: AuthContext = this.defaultAuthContext): Promise<QueryResult> {
+    return this.storage.queryNodesAdvanced(options, auth);
   }
 
   async createRelationship(relationship: Relationship, auth?: AuthContext): Promise<void> {

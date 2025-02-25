@@ -1,4 +1,4 @@
-import { Node, AuthContext, StorageAdapter, Relationship } from "./types";
+import { Node, AuthContext, StorageAdapter, Relationship, QueryOptions, QueryResult } from "./types";
 import { logger } from './logger';
 import { BaseStorageAdapter } from "./base-storage-adapter";
 
@@ -117,6 +117,48 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         }
 
         return relatedNodes;
+    }
+
+    async queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult> {
+        const allNodes = await this.queryNodes({}, auth);
+        
+        // Filter nodes based on query criteria
+        const filteredNodes = allNodes.filter(node => {
+            if (options.filter) {
+                if (options.filter.field === 'type' && options.filter.value !== node.type) {
+                    return false;
+                }
+                // Add more filter conditions as needed
+            }
+            return true;
+        });
+
+        // Apply sorting if specified
+        if (options.sort?.length) {
+            filteredNodes.sort((a, b) => {
+                for (const sort of options.sort!) {
+                    const aVal = a.properties[sort.field];
+                    const bVal = b.properties[sort.field];
+                    if (aVal !== bVal) {
+                        return sort.direction === 'asc' ? 
+                            (aVal < bVal ? -1 : 1) : 
+                            (aVal < bVal ? 1 : -1);
+                    }
+                }
+                return 0;
+            });
+        }
+
+        // Apply pagination
+        const start = options.pagination?.offset || 0;
+        const end = options.pagination ? start + options.pagination.limit : undefined;
+        const paginatedNodes = filteredNodes.slice(start, end);
+
+        return {
+            items: paginatedNodes,
+            total: filteredNodes.length,
+            hasMore: end ? end < filteredNodes.length : false
+        };
     }
 }
 

@@ -5,7 +5,7 @@ import {
   ListObjectsV2Command,
   DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
-import { Node, S3CoreDBConfig, AuthContext } from "./types";
+import { Node, S3CoreDBConfig, AuthContext, QueryFilter, Aggregation, QueryOptions, QueryResult } from "./types";
 import { logger } from './logger';
 
 export class S3NodeOperations {
@@ -327,5 +327,153 @@ export class S3NodeOperations {
       }
     }
     return true;
+  }
+
+  private evaluateFilter(node: Node, filter: QueryFilter): boolean {
+    if (!filter) return true;
+
+    if (filter.logic && filter.filters) {
+      switch (filter.logic) {
+        case 'and':
+          return filter.filters.every(f => this.evaluateFilter(node, f));
+        case 'or':
+          return filter.filters.some(f => this.evaluateFilter(node, f));
+        case 'not':
+          return !filter.filters.some(f => this.evaluateFilter(node, f));
+        default:
+          return true;
+      }
+    }
+
+    if (!filter.field || !filter.operator) return true;
+    const value = node.properties[filter.field];
+
+    switch (filter.operator) {
+      case 'eq':
+        return value === filter.value;
+      case 'neq':
+        return value !== filter.value;
+      case 'gt':
+        return value > filter.value;
+      case 'gte':
+        return value >= filter.value;
+      case 'lt':
+        return value < filter.value;
+      case 'lte':
+        return value <= filter.value;
+      case 'in':
+        return Array.isArray(filter.value) && filter.value.includes(value);
+      case 'nin':
+        return Array.isArray(filter.value) && !filter.value.includes(value);
+      case 'contains':
+        return typeof value === 'string' && value.includes(String(filter.value));
+      case 'startsWith':
+        return typeof value === 'string' && value.startsWith(String(filter.value));
+      case 'endsWith':
+        return typeof value === 'string' && value.endsWith(String(filter.value));
+      default:
+        return true;
+    }
+  }
+
+  private calculateAggregations(nodes: Node[], aggregations: Aggregation[], groupBy?: string[]): Record<string, any> {
+    if (!aggregations?.length) return {};
+
+    const groups = new Map<string, Node[]>();
+    if (groupBy?.length) {
+      nodes.forEach(node => {
+        const groupKey = groupBy.map(field => node.properties[field]).join('__');
+        const group = groups.get(groupKey) || [];
+        group.push(node);
+        groups.set(groupKey, group);
+      });
+    } else {
+      groups.set('all', nodes);
+    }
+
+    const results: Record<string, any> = {};
+    for (const [groupKey, groupNodes] of groups) {
+      const groupResults: Record<string, any> = {};
+      
+      for (const agg of aggregations) {
+        const values = groupNodes.map(n => n.properties[agg.field]).filter(v => v != null);
+        const alias = agg.alias || `${agg.operator}_${agg.field}`;
+
+        switch (agg.operator) {
+          case 'count':
+            groupResults[alias] = values.length;
+            break;
+          case 'sum':
+            groupResults[alias] = values.reduce((a, b) => a + b, 0);
+            break;
+          case 'avg':
+            groupResults[alias] = values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+            break;
+          case 'min':
+            groupResults[alias] = values.length ? Math.min(...values) : null;
+            break;
+          case 'max':
+            groupResults[alias] = values.length ? Math.max(...values) : null;
+            break;
+        }
+      }
+
+      if (groupBy?.length) {
+        const groupFields = groupKey.split('__');
+        results[groupKey] = {
+          group: Object.fromEntries(groupBy.map((field, i) => [field, groupFields[i]])),
+          aggregations: groupResults
+        };
+      } else {
+        Object.assign(results, groupResults);
+      }
+    }
+
+    return results;
+  }
+
+  async queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult> {
+    const allNodes = await this.queryNodes(options.filter?.field === 'type' ? { type: options.filter.value } : {}, auth);
+    
+    // Apply complex filtering
+    const filteredNodes = allNodes.filter(node => this.evaluateFilter(node, options.filter || {}));
+
+    // Calculate total before pagination
+    const total = filteredNodes.length;
+
+    // Apply sorting
+    if (options.sort?.length) {
+      filteredNodes.sort((a, b) => {
+        for (const sort of options.sort!) {
+          const aVal = a.properties[sort.field];
+          const bVal = b.properties[sort.field];
+          if (aVal !== bVal) {
+            return sort.direction === 'asc' ? 
+              (aVal < bVal ? -1 : 1) : 
+              (aVal < bVal ? 1 : -1);
+          }
+        }
+        return 0;
+      });
+    }
+
+    // Apply pagination
+    const start = options.pagination?.offset || 0;
+    const end = options.pagination ? start + options.pagination.limit : undefined;
+    const paginatedNodes = filteredNodes.slice(start, end);
+
+    // Calculate aggregations
+    const aggregations = this.calculateAggregations(
+      filteredNodes,
+      options.aggregations || [],
+      options.groupBy
+    );
+
+    return {
+      items: paginatedNodes,
+      total,
+      aggregations,
+      hasMore: end ? end < filteredNodes.length : false
+    };
   }
 }

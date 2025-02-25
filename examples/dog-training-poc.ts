@@ -11,11 +11,12 @@ async function main() {
     // Initialize the storage adapter and database
     const adapter = new FileSystemStorageAdapter('db-data');
     const db = new S3CoreDB({
-        endpoint: "http://localhost:4566",
-        accessKeyId: "test",
-        secretAccessKey: "test",
-        bucket: "test-bucket",
-        s3ForcePathStyle: true
+        // Using filesystem adapter doesn't need S3 config
+        endpoint: "",
+        accessKeyId: "",
+        secretAccessKey: "",
+        bucket: "",
+        s3ForcePathStyle: false
     }, adapter);
 
     console.log("🧹 Cleaning up old data...");
@@ -40,6 +41,19 @@ async function main() {
             permissions: ["read"]
         });
         console.log(`Created trainer: ${trainer.properties.name}`);
+
+        // Create another trainer with different specialties
+        const trainer2 = await db.createNode({
+            type: "trainer",
+            properties: {
+                name: "Sarah Wilson",
+                specialties: ["agility", "therapy dog training", "tricks"],
+                certifications: ["CPDT-KA", "CTDI"],
+                email: "sarah.wilson@example.com"
+            },
+            permissions: ["read"]
+        });
+        console.log(`Created trainer: ${trainer2.properties.name}`);
 
         // Create training packages
         const basicPackage = await db.createNode({
@@ -105,6 +119,18 @@ async function main() {
                 breed: "German Shepherd",
                 age: 2,
                 issues: ["anxiety", "excessive barking"]
+            },
+            permissions: ["read"]
+        });
+
+        // Add another dog without behavior issues to verify filtering
+        const dog3 = await db.createNode({
+            type: "dog",
+            properties: {
+                name: "Bella",
+                breed: "Labrador Retriever",
+                age: 3,
+                issues: ["food stealing"]
             },
             permissions: ["read"]
         });
@@ -240,6 +266,83 @@ async function main() {
                 console.log(`- ${subscriber.properties.name} with dog ${dogs[0]?.properties.name}`);
                 console.log(`  Latest session notes: ${sessions[0]?.properties.notes}`);
             }
+        }
+
+        // Advanced Query Examples
+        console.log("\n📊 Running advanced queries...");
+
+        // Find all dogs with specific issues and age > 1, sorted by age
+        const dogQuery = await db.queryNodesAdvanced({
+            filter: {
+                logic: 'and',
+                filters: [
+                    { field: 'type', operator: 'eq', value: 'dog' },
+                    { field: 'properties.age', operator: 'gt', value: 1 },
+                    { 
+                        logic: 'or',
+                        filters: [
+                            { field: 'properties.issues', operator: 'contains', value: 'anxiety' },
+                            { field: 'properties.issues', operator: 'contains', value: 'pulling on leash' }
+                        ]
+                    }
+                ]
+            },
+            sort: [{ field: 'properties.age', direction: 'desc' }],
+            pagination: { limit: 10, offset: 0 }
+        }, readAuth);
+
+        console.log("\nDogs with behavior issues (age > 1):");
+        if (dogQuery.items.length > 0) {
+            dogQuery.items.forEach(dog => {
+                console.log(`- ${dog.properties.name} (${dog.properties.age} years): ${dog.properties.issues.join(', ')}`);
+            });
+        } else {
+            console.log("No matching dogs found");
+        }
+
+        // Get package statistics
+        const packageStats = await db.queryNodesAdvanced({
+            filter: { field: 'type', operator: 'eq', value: 'package' },
+            aggregations: [
+                { field: 'properties.price', operator: 'avg', alias: 'avg_price' },
+                { field: 'properties.price', operator: 'min', alias: 'min_price' },
+                { field: 'properties.price', operator: 'max', alias: 'max_price' },
+                { field: 'properties.sessionsCount', operator: 'sum', alias: 'total_sessions' }
+            ]
+        }, readAuth);
+
+        console.log("\nPackage Statistics:");
+        if (packageStats.aggregations) {
+            const { avg_price, min_price, max_price, total_sessions } = packageStats.aggregations;
+            if (typeof avg_price === 'number') console.log(`Average Price: $${avg_price.toFixed(2)}`);
+            if (typeof min_price === 'number' && typeof max_price === 'number') {
+                console.log(`Price Range: $${min_price.toFixed(2)} - $${max_price.toFixed(2)}`);
+            }
+            if (typeof total_sessions === 'number') console.log(`Total Available Sessions: ${total_sessions}`);
+        } else {
+            console.log("No package statistics available");
+        }
+
+        // Get session statistics
+        const sessionStats = await db.queryNodesAdvanced({
+            filter: { field: 'type', operator: 'eq', value: 'session' },
+            aggregations: [
+                { field: 'properties.duration', operator: 'avg', alias: 'avg_duration' },
+                { field: 'type', operator: 'count', alias: 'session_count' }
+            ]
+        }, readAuth);
+
+        console.log("\nSession Statistics:");
+        if (sessionStats.aggregations) {
+            const { avg_duration, session_count } = sessionStats.aggregations;
+            if (typeof avg_duration === 'number') {
+                console.log(`Average Duration: ${avg_duration.toFixed(1)} minutes`);
+            }
+            if (typeof session_count === 'number') {
+                console.log(`Total Sessions: ${session_count}`);
+            }
+        } else {
+            console.log("No session statistics available");
         }
 
     } catch (error) {

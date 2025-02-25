@@ -1,4 +1,3 @@
-
 interface S3CoreDBConfig {
   endpoint: string;
   accessKeyId: string;
@@ -79,6 +78,47 @@ interface StorageAdapter {
     auth: AuthContext,
     options?: { direction?: "IN" | "OUT" }
   ): Promise<Node[]>;
+
+  /**
+   * Advanced query with filtering, aggregation, and pagination
+   */
+  queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult>;
+}
+
+export type ComparisonOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'nin' | 'contains' | 'startsWith' | 'endsWith';
+export type LogicalOperator = 'and' | 'or' | 'not';
+export type AggregationOperator = 'count' | 'sum' | 'avg' | 'min' | 'max';
+
+export interface QueryFilter {
+  field?: string;
+  operator?: ComparisonOperator;
+  value?: any;
+  logic?: LogicalOperator;
+  filters?: QueryFilter[];
+}
+
+export interface Aggregation {
+  field: string;
+  operator: AggregationOperator;
+  alias?: string;
+}
+
+export interface QueryOptions {
+  filter?: QueryFilter;
+  aggregations?: Aggregation[];
+  groupBy?: string[];
+  sort?: { field: string; direction: 'asc' | 'desc' }[];
+  pagination?: {
+    limit: number;
+    offset: number;
+  };
+}
+
+export interface QueryResult<T = Node> {
+  items: T[];
+  total: number;
+  aggregations?: Record<string, any>;
+  hasMore?: boolean;
 }
 
 export { S3CoreDBConfig, Relationship, Node, StorageAdapter, AuthContext };
