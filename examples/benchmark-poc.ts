@@ -27,9 +27,10 @@ async function runBenchmark(name: string, fn: () => Promise<void>) {
 
 interface BenchmarkResults {
     operation: string;
-    recordCount: number;
+    databaseSize: number;
+    relationshipDensity?: number;
     duration: number;
-    recordsPerSecond: number;
+    operationsPerSecond: number;
 }
 
 async function main() {
@@ -42,12 +43,6 @@ async function main() {
         s3ForcePathStyle: false
     }, adapter);
 
-    // Configure larger cache for benchmarking
-    adapter.configureCacheOptions({
-        ttl: 30 * 60 * 1000, // 30 minutes
-        maxSize: 100000 // Cache up to 100k entries
-    });
-
     console.log("🧹 Cleaning up old benchmark data...");
     await adapter.cleanup();
 
@@ -58,115 +53,169 @@ async function main() {
     db.setDefaultAuthContext(auth);
 
     const results: BenchmarkResults[] = [];
-    const datasetSizes = [1000, 10000, 100000]; // Sizes in records
+    
+    // Test different database sizes
+    const databaseSizes = [1000, 10000, 50000];
+    // Test different relationship densities (avg relationships per node)
+    const relationshipDensities = [1, 5, 10];
+
     console.log("📊 Starting benchmarks...");
 
     try {
-        for (const size of datasetSizes) {
-            console.log(`\n📊 Testing with ${formatNumber(size)} records`);
-            const userNodes: Node[] = [];
+        // First create the base dataset for each size
+        for (const size of databaseSizes) {
+            console.log(`\n📊 Testing with ${formatNumber(size)} nodes`);
+            const nodes: Node[] = [];
 
-            // Benchmark node creation
-            const createDuration = await runBenchmark(`Creating ${formatNumber(size)} users`, async () => {
+            // 1. Write Performance Test
+            adapter.startBatch();
+            const writeDuration = await runBenchmark(`Writing ${formatNumber(size)} nodes`, async () => {
                 for (let i = 0; i < size; i++) {
                     const node = await db.createNode({
                         type: "user",
                         properties: {
-                            id: `user${i}`,
                             name: `User ${i}`,
-                            email: `user${i}@example.com`,
                             age: Math.floor(Math.random() * 50) + 20,
-                            city: ["New York", "London", "Tokyo", "Paris", "Berlin"][Math.floor(Math.random() * 5)],
-                            interests: ["coding", "reading", "gaming", "sports", "music"].slice(0, Math.floor(Math.random() * 4) + 1)
+                            active: Math.random() > 0.5,
+                            score: Math.random() * 100
                         },
                         permissions: ["read"]
                     });
-                    userNodes.push(node);
+                    nodes.push(node);
                 }
             });
+            await adapter.commitBatch();
+
             results.push({
-                operation: "Node Creation",
-                recordCount: size,
-                duration: createDuration,
-                recordsPerSecond: (size / (createDuration / 1000))
+                operation: "Write",
+                databaseSize: size,
+                duration: writeDuration,
+                operationsPerSecond: (size / (writeDuration / 1000))
             });
-            console.log(`✅ Created ${formatNumber(size)} users in ${formatDuration(createDuration)}`);
 
-            // Benchmark complex queries
-            const complexQueryDuration = await runBenchmark(`Running complex queries on ${formatNumber(size)} records`, async () => {
-                await db.queryNodesAdvanced({
-                    filter: {
-                        logic: 'and',
-                        filters: [
-                            { field: 'type', operator: 'eq', value: 'user' },
-                            { field: 'properties.age', operator: 'gt', value: 30 },
-                            { field: 'properties.city', operator: 'eq', value: 'New York' }
-                        ]
-                    },
-                    sort: [{ field: 'properties.age', direction: 'desc' }],
-                    pagination: { limit: 100, offset: 0 }
-                }, auth);
+            // 2. Read Performance Test
+            const readDuration = await runBenchmark(`Random reads from ${formatNumber(size)} nodes`, async () => {
+                // Perform random reads totaling 20% of database size
+                const readCount = Math.floor(size * 0.2);
+                for (let i = 0; i < readCount; i++) {
+                    const randomNode = nodes[Math.floor(Math.random() * nodes.length)];
+                    await db.getNode(randomNode.id);
+                }
             });
+
             results.push({
-                operation: "Complex Query",
-                recordCount: size,
-                duration: complexQueryDuration,
-                recordsPerSecond: (size / (complexQueryDuration / 1000))
+                operation: "Read",
+                databaseSize: size,
+                duration: readDuration,
+                operationsPerSecond: (Math.floor(size * 0.2) / (readDuration / 1000))
             });
-            console.log(`✅ Completed complex query in ${formatDuration(complexQueryDuration)}`);
 
-            // Create relationships between random users
-            const relationshipCount = Math.floor(size * 0.5); // 5% of total nodes
-            const relationshipDuration = await runBenchmark(`Creating ${formatNumber(relationshipCount)} relationships`, async () => {
-                for (let i = 0; i < relationshipCount; i++) {
-                    const fromNode = userNodes[Math.floor(Math.random() * userNodes.length)];
-                    let toNode;
-                    do {
-                        toNode = userNodes[Math.floor(Math.random() * userNodes.length)];
-                    } while (toNode.id === fromNode.id);
+            // 3. Test different relationship densities
+            for (const density of relationshipDensities) {
+                adapter.startBatch();
+                const relationshipDuration = await runBenchmark(
+                    `Creating relationships with density ${density} for ${formatNumber(size)} nodes`, 
+                    async () => {
+                        // For each node, create N relationships where N is the density
+                        for (const node of nodes) {
+                            for (let i = 0; i < density; i++) {
+                                let targetNode;
+                                do {
+                                    targetNode = nodes[Math.floor(Math.random() * nodes.length)];
+                                } while (targetNode.id === node.id);
 
-                    await db.createRelationship({
-                        from: fromNode.id,
-                        to: toNode.id,
-                        type: "FOLLOWS",
-                        permissions: ["read"],
-                        properties: {
-                            since: new Date().toISOString()
+                                await db.createRelationship({
+                                    from: node.id,
+                                    to: targetNode.id,
+                                    type: "CONNECTED_TO",
+                                    permissions: ["read"],
+                                    properties: {
+                                        weight: Math.random()
+                                    }
+                                });
+                            }
                         }
-                    });
-                }
-            });
-            results.push({
-                operation: "Relationship Creation",
-                recordCount: relationshipCount,
-                duration: relationshipDuration,
-                recordsPerSecond: (relationshipCount / (relationshipDuration / 1000))
-            });
-            console.log(`✅ Created ${formatNumber(relationshipCount)} relationships in ${formatDuration(relationshipDuration)}`);
+                    }
+                );
+                await adapter.commitBatch();
 
-            // Benchmark relationship traversal
-            const traversalDuration = await runBenchmark(`Traversing relationships for ${formatNumber(size / 100)} users`, async () => {
-                for (let i = 0; i < size / 100; i++) {
-                    const randomNode = userNodes[Math.floor(Math.random() * userNodes.length)];
-                    await db.queryRelatedNodes(randomNode.id, "FOLLOWS", auth, { direction: "OUT" });
-                }
-            });
-            results.push({
-                operation: "Relationship Traversal",
-                recordCount: size / 100,
-                duration: traversalDuration,
-                recordsPerSecond: ((size / 100) / (traversalDuration / 1000))
-            });
-            console.log(`✅ Completed relationship traversal in ${formatDuration(traversalDuration)}`);
+                results.push({
+                    operation: "Create Relationships",
+                    databaseSize: size,
+                    relationshipDensity: density,
+                    duration: relationshipDuration,
+                    operationsPerSecond: (size * density / (relationshipDuration / 1000))
+                });
+
+                // 4. Test relationship traversal performance
+                const traversalDuration = await runBenchmark(
+                    `Traversing relationships with density ${density} for ${formatNumber(size)} nodes`,
+                    async () => {
+                        // Query related nodes for 10% of the nodes
+                        const sampleSize = Math.floor(size * 0.1);
+                        for (let i = 0; i < sampleSize; i++) {
+                            const randomNode = nodes[Math.floor(Math.random() * nodes.length)];
+                            await db.queryRelatedNodes(randomNode.id, "CONNECTED_TO");
+                        }
+                    }
+                );
+
+                results.push({
+                    operation: "Traverse Relationships",
+                    databaseSize: size,
+                    relationshipDensity: density,
+                    duration: traversalDuration,
+                    operationsPerSecond: (Math.floor(size * 0.1) / (traversalDuration / 1000))
+                });
+
+                // Test advanced query performance
+                const advancedQueryDuration = await runBenchmark(
+                    `Running advanced queries with complex filters on ${formatNumber(size)} nodes`,
+                    async () => {
+                        // Complex filter with AND/OR conditions
+                        await db.queryNodesAdvanced({
+                            filter: {
+                                logic: 'and',
+                                filters: [
+                                    { field: 'type', operator: 'eq', value: 'user' },
+                                    { 
+                                        logic: 'or',
+                                        filters: [
+                                            { field: 'properties.age', operator: 'gt', value: 30 },
+                                            { field: 'properties.active', operator: 'eq', value: true }
+                                        ]
+                                    }
+                                ]
+                            },
+                            sort: [{ field: 'age', direction: 'desc' }],
+                            aggregations: [
+                                { field: 'age', operator: 'avg', alias: 'avgAge' },
+                                { field: 'age', operator: 'max', alias: 'maxAge' },
+                                { field: 'type', operator: 'count', alias: 'total' }
+                            ],
+                            pagination: { offset: 0, limit: 100 }
+                        }, auth);
+                    }
+                );
+
+                results.push({
+                    operation: "Advanced Query",
+                    databaseSize: size,
+                    relationshipDensity: density,
+                    duration: advancedQueryDuration,
+                    operationsPerSecond: (1 / (advancedQueryDuration / 1000)) // 1 complex query per execution
+                });
+            }
         }
 
-        // Print summary
-        console.log("\n📈 Benchmark Summary:");
+        // Print final summary
+        console.log("\n📊 Benchmark Summary:");
         console.table(results.map(r => ({
             Operation: r.operation,
-            "Record Count": formatNumber(r.recordCount),
+            "Database Size": formatNumber(r.databaseSize),
+            "Relationship Density": r.relationshipDensity || "N/A",
             Duration: formatDuration(r.duration),
-            "Records/Second": formatNumber(Math.floor(r.recordsPerSecond))
+            "Ops/Second": formatNumber(Math.floor(r.operationsPerSecond))
         })));
 
     } catch (error) {

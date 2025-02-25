@@ -121,4 +121,23 @@ export interface QueryResult<T = Node> {
   hasMore?: boolean;
 }
 
+export interface CompoundIndexConfig {
+  type: string;
+  properties: string[];
+}
+
+export interface RangeIndexConfig {
+  type: string;
+  property: string;
+}
+
+export interface StorageAdapterOptions {
+  ttl?: number;
+  maxSize?: number;
+  indexes?: {
+    compound?: CompoundIndexConfig[];
+    range?: RangeIndexConfig[];
+  };
+}
+
 export { S3CoreDBConfig, Relationship, Node, StorageAdapter, AuthContext };

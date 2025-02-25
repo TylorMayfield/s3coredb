@@ -4,12 +4,21 @@ import { logger } from './logger';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { BaseStorageAdapter } from "./base-storage-adapter";
+import { promisify } from 'util';
+
+const mkdir = promisify(fs.mkdir);
+const writeFile = promisify(fs.writeFile);
+const readFile = promisify(fs.readFile);
+const readdir = promisify(fs.readdir);
+const rm = promisify(fs.rm);
 
 class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
     private dataDir: string;
     private nodesDir: string;
     private relationshipsDir: string;
     private initialized: Promise<void>;
+    private basePath: string;
+    private batchMode = false;
 
     constructor(baseDir: string = 'db-data') {
         super();
@@ -17,6 +26,7 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         this.nodesDir = path.join(this.dataDir, 'nodes');
         this.relationshipsDir = path.join(this.dataDir, 'relationships');
         this.initialized = this.initializeDirectories();
+        this.basePath = path.resolve(baseDir);
     }
 
     private async initializeDirectories() {
@@ -52,8 +62,21 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         await fs.mkdir(typeDir, { recursive: true });
     }
 
+    startBatch(): void {
+        this.batchMode = true;
+        this.cache.startBatch();
+    }
+
+    async commitBatch(): Promise<void> {
+        this.batchMode = false;
+        await this.cache.commitBatch();
+    }
+
     async createNode(node: Node, auth: AuthContext): Promise<Node> {
         await this.initialized;
+        if (!node.id) {
+            node.id = this.generateId();
+        }
         this.validateNode(node);
         logger.info(`Creating node with id: ${node.id} of type: ${node.type}`);
         
@@ -107,47 +130,78 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         await this.initialized;
         logger.info(`Querying nodes with query: ${JSON.stringify(query)}`);
         const results = new Map<string, Node>();
+        const result: Node[] = [];
+        const nodeTypes = await this.getNodeTypes();
 
-        try {
-            // Use type index if available
-            if (query.type) {
-                const cachedTypeNodes = this.cache.queryNodesByType(query.type);
-                if (cachedTypeNodes.size > 0) {
-                    for (const nodeId of cachedTypeNodes) {
-                        const node = await this.getNode(nodeId, auth);
-                        if (node && this.matchesQuery(node, query)) {
-                            results.set(node.id, node);
-                        }
+        // Use type index if available
+        if (query.type) {
+            const cachedTypeNodes = this.cache.queryNodesByType(query.type);
+            if (cachedTypeNodes.size > 0) {
+                for (const nodeId of cachedTypeNodes) {
+                    const node = await this.getNode(nodeId, auth);
+                    if (node && this.matchesQuery(node, query)) {
+                        results.set(node.id, node);
                     }
-                    return Array.from(results.values());
                 }
+                return Array.from(results.values());
             }
+        }
 
-            // Fallback to filesystem search
-            const typeDirectories = await fs.readdir(this.nodesDir);
+        // Use compound index if available
+        if (query.type && query['properties.city'] && query['properties.age']) {
+            const nodes = this.cache.queryByCompoundIndex(
+                query.type,
+                ['city', 'age'],
+                [query['properties.city'], query['properties.age']]
+            );
+            if (nodes.size > 0) {
+                for (const nodeId of nodes) {
+                    const node = await this.getNode(nodeId, auth);
+                    if (node) result.push(node);
+                }
+                return result;
+            }
+        }
+
+        // Use range index for age queries
+        if (query.type && query['properties.age']) {
+            const nodes = this.cache.queryByRange(
+                query.type,
+                'age',
+                query['properties.age'],
+                query['properties.age']
+            );
+            if (nodes.size > 0) {
+                for (const nodeId of nodes) {
+                    const node = await this.getNode(nodeId, auth);
+                    if (node) result.push(node);
+                }
+                return result;
+            }
+        }
+
+        // Fallback to filesystem search
+        const typeDirectories = await fs.readdir(this.nodesDir);
+        
+        // If query has a type, only search in that type's directory
+        const dirsToSearch = query.type 
+            ? [query.type].filter(type => typeDirectories.includes(type))
+            : typeDirectories;
+
+        for (const typeDir of dirsToSearch) {
+            const typePath = path.join(this.nodesDir, typeDir);
+            const files = await fs.readdir(typePath);
             
-            // If query has a type, only search in that type's directory
-            const dirsToSearch = query.type 
-                ? [query.type].filter(type => typeDirectories.includes(type))
-                : typeDirectories;
-
-            for (const typeDir of dirsToSearch) {
-                const typePath = path.join(this.nodesDir, typeDir);
-                const files = await fs.readdir(typePath);
-                
-                for (const file of files) {
-                    if (file.endsWith('.json')) {
-                        const data = await fs.readFile(path.join(typePath, file), 'utf8');
-                        const node = JSON.parse(data) as Node;
-                        if (this.matchesQuery(node, query) && this.canAccessNode(node, auth)) {
-                            this.cache.cacheNode(node);
-                            results.set(node.id, node);
-                        }
+            for (const file of files) {
+                if (file.endsWith('.json')) {
+                    const data = await fs.readFile(path.join(typePath, file), 'utf8');
+                    const node = JSON.parse(data) as Node;
+                    if (this.matchesQuery(node, query) && this.canAccessNode(node, auth)) {
+                        this.cache.cacheNode(node);
+                        results.set(node.id, node);
                     }
                 }
             }
-        } catch (error) {
-            logger.error('Error querying nodes:', error);
         }
 
         return Array.from(results.values());
@@ -157,88 +211,75 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         await this.initialized;
         logger.info(`Advanced query with options: ${JSON.stringify(options)}`);
         
-        // Get all nodes first
-        const allNodes = await this.queryNodes({}, auth);
-        let filteredNodes = [...allNodes];
+        const { filter, sort, pagination } = options;
+        let nodes: Node[] = [];
 
-        // Apply filters
-        if (options.filter) {
-            filteredNodes = filteredNodes.filter(node => {
-                const filter = options.filter!;
-                if ('logic' in filter && filter.filters) {
-                    if (filter.logic === 'and') {
-                        return filter.filters.every(f => this.matchesFilterCondition(node, f));
-                    } else if (filter.logic === 'or') {
-                        return filter.filters.some(f => this.matchesFilterCondition(node, f));
+        // Use indexes for filtering if possible
+        if (filter?.filters) {
+            const typeFilter = filter.filters.find(f => f.field === 'type');
+            const ageFilter = filter.filters.find(f => f.field === 'properties.age');
+            const cityFilter = filter.filters.find(f => f.field === 'properties.city');
+            
+            if (typeFilter?.value && ageFilter?.value) {
+                // Try range index for age queries
+                if (ageFilter.operator === 'gt' || ageFilter.operator === 'gte' ||
+                    ageFilter.operator === 'lt' || ageFilter.operator === 'lte') {
+                    const min = ageFilter.operator === 'gt' || ageFilter.operator === 'gte' ? ageFilter.value : undefined;
+                    const max = ageFilter.operator === 'lt' || ageFilter.operator === 'lte' ? ageFilter.value : undefined;
+                    const nodeIds = this.cache.queryByRange(typeFilter.value, 'age', min, max);
+                    
+                    for (const nodeId of nodeIds) {
+                        const node = await this.getNode(nodeId, auth);
+                        if (node) nodes.push(node);
                     }
                 }
-                return this.matchesFilterCondition(node, filter);
-            });
+                // Try compound index for city + age queries
+                else if (cityFilter?.value) {
+                    const nodeIds = this.cache.queryByCompoundIndex(
+                        typeFilter.value,
+                        ['city', 'age'],
+                        [cityFilter.value, ageFilter.value]
+                    );
+                    for (const nodeId of nodeIds) {
+                        const node = await this.getNode(nodeId, auth);
+                        if (node) nodes.push(node);
+                    }
+                }
+            }
+        }
+
+        // Fallback to basic query if no index matches
+        if (nodes.length === 0) {
+            nodes = await this.queryNodes(this.convertFilterToQuery(filter), auth);
         }
 
         // Apply sorting
-        if (options.sort?.length) {
-            filteredNodes.sort((a, b) => {
-                for (const sort of options.sort!) {
-                    const aVal = this.getPropertyValue(a, sort.field);
-                    const bVal = this.getPropertyValue(b, sort.field);
-                    if (aVal !== bVal) {
-                        return sort.direction === 'asc' ? 
-                            (aVal < bVal ? -1 : 1) : 
-                            (aVal < bVal ? 1 : -1);
+        if (sort) {
+            nodes.sort((a, b) => {
+                for (const { field, direction } of sort) {
+                    const aValue = this.getNestedValue(a, field);
+                    const bValue = this.getNestedValue(b, field);
+                    if (aValue !== bValue) {
+                        return direction === 'asc' ? 
+                            (aValue < bValue ? -1 : 1) :
+                            (aValue < bValue ? 1 : -1);
                     }
                 }
                 return 0;
             });
         }
 
-        // Calculate aggregations if requested
-        let aggregations: Record<string, any> | undefined;
-        if (options.aggregations?.length) {
-            aggregations = {};
-            for (const agg of options.aggregations) {
-                if (!agg.alias) continue;
-                const values = filteredNodes.map(node => this.getPropertyValue(node, agg.field)).filter(val => val != null);
-                if (values.length === 0) continue;
-
-                switch (agg.operator) {
-                    case 'avg':
-                        if (values.every(v => typeof v === 'number')) {
-                            aggregations[agg.alias] = values.reduce((sum, val) => sum + (val as number), 0) / values.length;
-                        }
-                        break;
-                    case 'sum':
-                        if (values.every(v => typeof v === 'number')) {
-                            aggregations[agg.alias] = values.reduce((sum, val) => sum + (val as number), 0);
-                        }
-                        break;
-                    case 'min':
-                        if (values.every(v => typeof v === 'number')) {
-                            aggregations[agg.alias] = Math.min(...values as number[]);
-                        }
-                        break;
-                    case 'max':
-                        if (values.every(v => typeof v === 'number')) {
-                            aggregations[agg.alias] = Math.max(...values as number[]);
-                        }
-                        break;
-                    case 'count':
-                        aggregations[agg.alias] = values.length;
-                        break;
-                }
-            }
+        // Apply pagination
+        const total = nodes.length;
+        if (pagination) {
+            const { offset = 0, limit = 10 } = pagination;
+            nodes = nodes.slice(offset, offset + limit);
         }
 
-        // Apply pagination
-        const start = options.pagination?.offset || 0;
-        const end = options.pagination ? start + options.pagination.limit : undefined;
-        const paginatedNodes = filteredNodes.slice(start, end);
-
         return {
-            items: paginatedNodes,
-            total: filteredNodes.length,
-            hasMore: end ? end < filteredNodes.length : false,
-            aggregations
+            items: nodes,
+            total,
+            hasMore: pagination ? (pagination.offset || 0) + nodes.length < total : false
         };
     }
 
@@ -410,6 +451,32 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
             logger.error('Error during cleanup:', error);
             throw error;
         }
+    }
+
+    private convertFilterToQuery(filter?: QueryOptions['filter']): any {
+        if (!filter) return {};
+        
+        const query: any = {};
+        if (filter.filters) {
+            for (const f of filter.filters) {
+                if (f.field && f.operator === 'eq') {
+                    query[f.field] = f.value;
+                }
+            }
+        }
+        return query;
+    }
+
+    private generateId(): string {
+        return require('crypto').randomUUID();
+    }
+
+    private async getNodeTypes(): Promise<string[]> {
+        await this.initialized;
+        const entries = await fs.readdir(this.nodesDir, { withFileTypes: true });
+        return entries
+            .filter(entry => entry.isDirectory())
+            .map(entry => entry.name);
     }
 }
 
