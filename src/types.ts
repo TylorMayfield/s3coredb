@@ -76,7 +76,10 @@ interface StorageAdapter {
     from: string,
     type: string,
     auth: AuthContext,
-    options?: { direction?: "IN" | "OUT" }
+    options?: { 
+      direction?: "IN" | "OUT";
+      skipCache?: boolean;
+    }
   ): Promise<Node[]>;
 
   /**
@@ -138,6 +141,29 @@ export interface StorageAdapterOptions {
     compound?: CompoundIndexConfig[];
     range?: RangeIndexConfig[];
   };
+}
+
+export interface CacheOptions {
+  ttl?: number;
+  maxSize?: number;
+  indexes?: {
+    compound?: Array<{
+      type: string;
+      properties: string[];
+    }>;
+    range?: Array<{
+      type: string;
+      property: string;
+    }>;
+  };
+  dbCache?: DBCacheConfig;
+}
+
+export interface DBCacheConfig {
+  enabled: boolean;
+  directory: string;
+  persistenceInterval: number;
+  maxCacheAge: number;
 }
 
 export { S3CoreDBConfig, Relationship, Node, StorageAdapter, AuthContext };

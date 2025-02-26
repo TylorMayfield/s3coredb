@@ -4,6 +4,7 @@ import { logger } from './logger';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { BaseStorageAdapter } from "./base-storage-adapter";
+import { glob } from 'glob';
 import { promisify } from 'util';
 
 const mkdir = promisify(fs.mkdir);
@@ -20,8 +21,8 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
     private basePath: string;
     private batchMode = false;
 
-    constructor(baseDir: string = 'db-data') {
-        super();
+    constructor(baseDir: string = 'db-data', numShards: number = 256, shardLevels: number = 2) {
+        super(undefined, numShards, shardLevels);
         this.dataDir = path.resolve(process.cwd(), baseDir);
         this.nodesDir = path.join(this.dataDir, 'nodes');
         this.relationshipsDir = path.join(this.dataDir, 'relationships');
@@ -42,24 +43,26 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
     }
 
     private getNodePath(node: Node): string {
-        const typeDir = path.join(this.nodesDir, node.type);
-        return path.join(typeDir, `${node.id}.json`);
+        const shardPath = this.getShardPathForType(node.type, node.id);
+        return path.join(this.nodesDir, shardPath, `${node.id}.json`);
     }
 
-    private async ensureTypeDirectory(type: string): Promise<void> {
-        const typeDir = path.join(this.nodesDir, type);
-        await fs.mkdir(typeDir, { recursive: true });
+    private async ensureShardDirectory(type: string, id: string, isRelationship: boolean = false): Promise<void> {
+        const baseDir = isRelationship ? this.relationshipsDir : this.nodesDir;
+        const shardPath = isRelationship 
+            ? this.getShardPathForRelationship(type, id, id) // For relationships, id is the combinedId
+            : this.getShardPathForType(type, id);
+        const fullPath = path.join(baseDir, shardPath);
+        await fs.mkdir(fullPath, { recursive: true });
     }
 
     private getRelationshipPath(relationship: Relationship): string {
-        const typeDir = path.join(this.relationshipsDir, relationship.type);
-        const relId = `${relationship.from}__${relationship.to}`;
-        return path.join(typeDir, `${relId}.json`);
-    }
-
-    private async ensureRelationshipTypeDirectory(type: string): Promise<void> {
-        const typeDir = path.join(this.relationshipsDir, type);
-        await fs.mkdir(typeDir, { recursive: true });
+        const shardPath = this.getShardPathForRelationship(
+            relationship.type,
+            relationship.from,
+            relationship.to
+        );
+        return path.join(this.relationshipsDir, shardPath, `${relationship.from}__${relationship.to}.json`);
     }
 
     startBatch(): void {
@@ -80,7 +83,7 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         this.validateNode(node);
         logger.info(`Creating node with id: ${node.id} of type: ${node.type}`);
         
-        await this.ensureTypeDirectory(node.type);
+        await this.ensureShardDirectory(node.type, node.id);
         const filePath = this.getNodePath(node);
         await fs.writeFile(filePath, JSON.stringify(node, null, 2));
         return node;
@@ -97,20 +100,20 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         }
         
         try {
-            // Since we don't know the type, we need to search in all type directories
-            const typeDirectories = await fs.readdir(this.nodesDir);
+            // Search in all type directories since we don't know the type
+            const nodeTypes = await fs.readdir(this.nodesDir);
             
-            for (const typeDir of typeDirectories) {
-                const possiblePath = path.join(this.nodesDir, typeDir, `${id}.json`);
-                try {
-                    const data = await fs.readFile(possiblePath, 'utf8');
+            for (const type of nodeTypes) {
+                const pattern = path.join(this.nodesDir, type, '**', `${id}.json`);
+                const matches = await glob(pattern);
+                
+                if (matches.length > 0) {
+                    const data = await fs.readFile(matches[0], 'utf8');
                     const node = JSON.parse(data) as Node;
                     if (this.canAccessNode(node, auth)) {
                         this.cache.cacheNode(node);
                         return node;
                     }
-                } catch (error) {
-                    continue; // Node not found in this type directory
                 }
             }
             return null;
@@ -347,8 +350,12 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
             throw new Error("Permission denied: Insufficient permissions to create relationship");
         }
 
-        await this.ensureRelationshipTypeDirectory(relationship.type);
         const filePath = this.getRelationshipPath(relationship);
+        const dirPath = path.dirname(filePath);
+        
+        // Ensure all parent directories exist
+        await fs.mkdir(dirPath, { recursive: true });
+        
         await fs.writeFile(filePath, JSON.stringify(relationship, null, 2));
     }
 
@@ -356,11 +363,15 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         from: string,
         type: string,
         auth: AuthContext,
-        options?: { direction?: "IN" | "OUT" }
+        options?: { direction?: "IN" | "OUT"; skipCache?: boolean }
     ): Promise<Node[]> {
         await this.initialized;
-        logger.info(`Querying related nodes from ${from} of type ${type}`);
+        // Use cache if available
+        if (!options?.skipCache) {
+            return this.queryRelatedNodesWithCache(from, type, auth, options);
+        }
 
+        logger.info(`Querying related nodes from ${from} of type ${type}`);
         const fromNode = await this.getNode(from, auth);
         if (!fromNode || !this.canAccessNode(fromNode, auth)) {
             return [];
@@ -368,27 +379,15 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
 
         const relatedNodes: Node[] = [];
         try {
-            const typeDir = path.join(this.relationshipsDir, type);
-            const files = await fs.readdir(typeDir).catch(() => []);
-
+            const pattern = path.join(this.relationshipsDir, type, '**', '*.json');
+            const files = await glob(pattern);
+            
             for (const file of files) {
-                if (!file.endsWith('.json')) continue;
-
-                // Try cache first for relationship
-                const [fromId, toId] = file.slice(0, -5).split('__');
-                const cachedRel = await this.getCachedRelationship(fromId, toId, type);
-                
-                let relationship: Relationship;
-                if (cachedRel) {
-                    relationship = cachedRel;
-                } else {
-                    const relationshipData = await fs.readFile(path.join(typeDir, file), 'utf8');
-                    relationship = JSON.parse(relationshipData) as Relationship;
-                    this.cache.cacheRelationship(relationship);
-                }
+                const relationshipData = await fs.readFile(file, 'utf8');
+                const relationship = JSON.parse(relationshipData) as Relationship;
                 
                 if (this.matchesRelationshipQuery(relationship, from, type, options?.direction)) {
-                    const targetId = options?.direction === "IN" ? fromId : toId;
+                    const targetId = options?.direction === "IN" ? relationship.from : relationship.to;
                     const node = await this.getNode(targetId, auth);
                     if (node && this.canAccessNode(node, auth)) {
                         relatedNodes.push(node);
@@ -398,7 +397,6 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         } catch (error) {
             logger.error('Error querying related nodes:', error);
         }
-
         return relatedNodes;
     }
 
@@ -414,38 +412,12 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
     async cleanup(): Promise<void> {
         await this.initialized;
         try {
-            // Clean up nodes directory
-            const nodeEntries = await fs.readdir(this.nodesDir);
-            for (const entry of nodeEntries) {
-                const fullPath = path.join(this.nodesDir, entry);
-                if (await this.isDirectory(fullPath)) {
-                    // Handle type-based subdirectories
-                    const files = await fs.readdir(fullPath);
-                    for (const file of files) {
-                        await fs.unlink(path.join(fullPath, file));
-                    }
-                    await fs.rmdir(fullPath);
-                } else {
-                    // Handle files directly in nodes directory (old structure)
-                    await fs.unlink(fullPath);
-                }
-            }
-
-            // Clean up relationships directory
-            const relTypeEntries = await fs.readdir(this.relationshipsDir);
-            for (const entry of relTypeEntries) {
-                const fullPath = path.join(this.relationshipsDir, entry);
-                if (await this.isDirectory(fullPath)) {
-                    const files = await fs.readdir(fullPath);
-                    for (const file of files) {
-                        await fs.unlink(path.join(fullPath, file));
-                    }
-                    await fs.rmdir(fullPath);
-                } else {
-                    await fs.unlink(fullPath);
-                }
-            }
-
+            // Clean up nodes directory recursively
+            await fs.rm(this.nodesDir, { recursive: true, force: true });
+            await fs.rm(this.relationshipsDir, { recursive: true, force: true });
+            
+            // Recreate the directories
+            await this.initializeDirectories();
             logger.info('Cleaned up all data files');
         } catch (error) {
             logger.error('Error during cleanup:', error);

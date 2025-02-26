@@ -6,8 +6,17 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
     private storage: Map<string, Map<string, Node>> = new Map(); // type -> (id -> Node)
     private relationships: Map<string, Map<string, Relationship[]>> = new Map(); // type -> (fromTo -> relationships[])
 
+    constructor(numShards: number = 256, shardLevels: number = 2) {
+        super(undefined, numShards, shardLevels);
+    }
+
     async createNode(node: Node, auth: AuthContext): Promise<Node> {
+        if (!node.id) {
+            node.id = require('crypto').randomUUID();
+        }
+        this.validateNode(node);
         logger.info(`Creating node with id: ${node.id} of type: ${node.type}`);
+        
         if (!this.storage.has(node.type)) {
             this.storage.set(node.type, new Map());
         }
@@ -17,10 +26,17 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
 
     async getNode(id: string, auth: AuthContext): Promise<Node | null> {
         logger.info(`Fetching node with id: ${id}`);
+        // Try cache first
+        const cachedNode = await this.getCachedNode(id, auth);
+        if (cachedNode) {
+            return cachedNode;
+        }
+
         // Search through all type maps for the node
         for (const typeMap of this.storage.values()) {
             const node = typeMap.get(id);
             if (node && this.canAccessNode(node, auth)) {
+                this.cache.cacheNode(node);
                 return node;
             }
         }
@@ -58,26 +74,63 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         return results;
     }
 
+    async queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult> {
+        const { filter, sort, pagination } = options;
+        let nodes: Node[] = [];
+
+        // Filter nodes based on query criteria
+        nodes = await this.queryNodes(this.convertFilterToQuery(filter), auth);
+
+        // Apply sorting
+        if (sort?.length) {
+            nodes.sort((a, b) => {
+                for (const sort of options.sort!) {
+                    const aVal = this.getNestedValue(a, sort.field);
+                    const bVal = this.getNestedValue(b, sort.field);
+                    if (aVal !== bVal) {
+                        return sort.direction === 'asc' ? 
+                            (aVal < bVal ? -1 : 1) : 
+                            (aVal < bVal ? 1 : -1);
+                    }
+                }
+                return 0;
+            });
+        }
+
+        // Apply pagination
+        const total = nodes.length;
+        if (pagination) {
+            const { offset = 0, limit = 10 } = pagination;
+            nodes = nodes.slice(offset, offset + limit);
+        }
+
+        return {
+            items: nodes,
+            total,
+            hasMore: pagination ? (pagination.offset || 0) + nodes.length < total : false
+        };
+    }
+
     async createRelationship(relationship: Relationship, auth: AuthContext): Promise<void> {
+        this.validateRelationship(relationship);
         logger.info(`Creating relationship from ${relationship.from} to ${relationship.to} of type ${relationship.type}`);
-        const { from, to, type } = relationship;
-        const fromNode = await this.getNode(from, auth);
-        const toNode = await this.getNode(to, auth);
+        
+        const fromNode = await this.getNode(relationship.from, auth);
+        const toNode = await this.getNode(relationship.to, auth);
 
         if (!fromNode || !toNode) {
-            logger.error("One or both nodes in the relationship do not exist.");
-            throw new Error("One or both nodes in the relationship do not exist.");
+            throw new Error("One or both nodes in the relationship do not exist");
         }
 
         if (!this.canAccessNode(fromNode, auth) || !this.canAccessNode(toNode, auth)) {
-            logger.error("Permission denied: Insufficient permissions to create relationship");
             throw new Error("Permission denied: Insufficient permissions to create relationship");
         }
 
-        if (!this.relationships.has(type)) {
-            this.relationships.set(type, new Map());
+        if (!this.relationships.has(relationship.type)) {
+            this.relationships.set(relationship.type, new Map());
         }
-
+        
+        const { from, to, type } = relationship;
         const typeMap = this.relationships.get(type)!;
         const key = `${from}__${to}`;
         const relationships = Array.isArray(typeMap.get(key)) 
@@ -91,8 +144,12 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         from: string,
         type: string,
         auth: AuthContext,
-        options?: { direction?: "IN" | "OUT" }
+        options?: { direction?: "IN" | "OUT"; skipCache?: boolean }
     ): Promise<Node[]> {
+        if (!options?.skipCache) {
+            return this.queryRelatedNodesWithCache(from, type, auth, options);
+        }
+
         logger.info(`Querying related nodes from ${from} of type ${type}`);
         const fromNode = await this.getNode(from, auth);
         if (!fromNode || !this.canAccessNode(fromNode, auth)) {
@@ -119,46 +176,18 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         return relatedNodes;
     }
 
-    async queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult> {
-        const allNodes = await this.queryNodes({}, auth);
+    private convertFilterToQuery(filter?: QueryOptions['filter']): any {
+        if (!filter) return {};
         
-        // Filter nodes based on query criteria
-        const filteredNodes = allNodes.filter(node => {
-            if (options.filter) {
-                if (options.filter.field === 'type' && options.filter.value !== node.type) {
-                    return false;
+        const query: any = {};
+        if (filter.filters) {
+            for (const f of filter.filters) {
+                if (f.field && f.operator === 'eq') {
+                    query[f.field] = f.value;
                 }
-                // Add more filter conditions as needed
             }
-            return true;
-        });
-
-        // Apply sorting if specified
-        if (options.sort?.length) {
-            filteredNodes.sort((a, b) => {
-                for (const sort of options.sort!) {
-                    const aVal = a.properties[sort.field];
-                    const bVal = b.properties[sort.field];
-                    if (aVal !== bVal) {
-                        return sort.direction === 'asc' ? 
-                            (aVal < bVal ? -1 : 1) : 
-                            (aVal < bVal ? 1 : -1);
-                    }
-                }
-                return 0;
-            });
         }
-
-        // Apply pagination
-        const start = options.pagination?.offset || 0;
-        const end = options.pagination ? start + options.pagination.limit : undefined;
-        const paginatedNodes = filteredNodes.slice(start, end);
-
-        return {
-            items: paginatedNodes,
-            total: filteredNodes.length,
-            hasMore: end ? end < filteredNodes.length : false
-        };
+        return query;
     }
 }
 

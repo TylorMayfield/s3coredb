@@ -1,5 +1,7 @@
 import { Node, Relationship, CompoundIndexConfig, RangeIndexConfig } from './types';
 import { logger } from './logger';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 interface RangeEntry {
     min: number;
@@ -7,9 +9,17 @@ interface RangeEntry {
     nodeIds: Set<string>;
 }
 
+interface DBCacheConfig {
+    enabled: boolean;
+    directory: string;
+    persistenceInterval: number;
+    maxCacheAge: number;
+}
+
 export class CacheManager {
     private nodeCache: Map<string, { node: Node; timestamp: number }> = new Map();
     private relationshipCache: Map<string, { relationship: Relationship; timestamp: number }> = new Map();
+    private traversalCache: Map<string, { nodeIds: Set<string>; timestamp: number }> = new Map(); // sourceId:type:direction -> Set<targetIds>
     private propertyIndexes: Map<string, Map<string, Set<string>>> = new Map(); // type -> property -> nodeIds
     private typeIndex: Map<string, Set<string>> = new Map(); // type -> nodeIds
     private relationshipTypeIndex: Map<string, Set<string>> = new Map(); // type -> relationshipIds
@@ -21,10 +31,31 @@ export class CacheManager {
     private indexStats: Map<string, { hits: number; misses: number }> = new Map();
     private batchMode = false;
     private batchQueue: Array<() => void> = [];
+    private traversalStats: Map<string, { hits: number; misses: number; avgResponseTime: number }> = new Map();
+    private dbCacheConfig: DBCacheConfig = {
+        enabled: false,
+        directory: '',
+        persistenceInterval: 60000,
+        maxCacheAge: 3600000
+    };
+    private adjacencyLists: Map<string, Map<string, Set<string>>> = new Map(); // nodeId -> (type -> Set<targetIds>)
+    private reverseAdjacencyLists: Map<string, Map<string, Set<string>>> = new Map(); // nodeId -> (type -> Set<sourceIds>)
 
-    constructor(options: { ttl?: number; maxSize?: number; indexes?: { compound?: CompoundIndexConfig[]; range?: RangeIndexConfig[] } } = {}) {
+    constructor(options: { 
+        ttl?: number; 
+        maxSize?: number; 
+        indexes?: { 
+            compound?: CompoundIndexConfig[]; 
+            range?: RangeIndexConfig[] 
+        };
+        dbCache?: DBCacheConfig;
+    } = {}) {
         this.ttl = options.ttl || 5 * 60 * 1000; // 5 minutes default TTL
         this.maxSize = options.maxSize || 10000; // Max 10000 entries default
+        
+        if (options.dbCache) {
+            this.dbCacheConfig = { ...this.dbCacheConfig, ...options.dbCache };
+        }
         
         // Initialize configured indexes
         if (options.indexes) {
@@ -99,14 +130,40 @@ export class CacheManager {
     }
 
     cacheRelationship(relationship: Relationship): void {
-        if (this.relationshipCache.size >= this.maxSize) {
-            this.evictOldest(this.relationshipCache);
-        }
+        this.queueOrExecute(() => {
+            if (this.relationshipCache.size >= this.maxSize) {
+                this.evictOldest(this.relationshipCache);
+            }
 
-        const relId = this.getRelationshipId(relationship);
-        this.relationshipCache.set(relId, { relationship, timestamp: Date.now() });
-        this.indexRelationship(relationship);
-        logger.debug('Cached relationship', { id: relId, type: relationship.type });
+            const relId = this.getRelationshipId(relationship);
+            this.relationshipCache.set(relId, { relationship, timestamp: Date.now() });
+            this.indexRelationship(relationship);
+            
+            // Update adjacency lists
+            if (!this.adjacencyLists.has(relationship.from)) {
+                this.adjacencyLists.set(relationship.from, new Map());
+            }
+            if (!this.adjacencyLists.get(relationship.from)!.has(relationship.type)) {
+                this.adjacencyLists.get(relationship.from)!.set(relationship.type, new Set());
+            }
+            this.adjacencyLists.get(relationship.from)!.get(relationship.type)!.add(relationship.to);
+
+            // Update reverse adjacency lists
+            if (!this.reverseAdjacencyLists.has(relationship.to)) {
+                this.reverseAdjacencyLists.set(relationship.to, new Map());
+            }
+            if (!this.reverseAdjacencyLists.get(relationship.to)!.has(relationship.type)) {
+                this.reverseAdjacencyLists.get(relationship.to)!.set(relationship.type, new Set());
+            }
+            this.reverseAdjacencyLists.get(relationship.to)!.get(relationship.type)!.add(relationship.from);
+            
+            logger.debug('Cached relationship and updated adjacency lists', { 
+                id: relId, 
+                type: relationship.type,
+                from: relationship.from,
+                to: relationship.to
+            });
+        });
     }
 
     getRelationship(from: string, to: string, type: string): Relationship | null {
@@ -121,6 +178,92 @@ export class CacheManager {
         }
 
         return cached.relationship;
+    }
+
+    // Add new method for traversal caching
+    cacheTraversalResult(sourceId: string, type: string, direction: "IN" | "OUT" | undefined, targetIds: string[]): void {
+        const cacheKey = this.getTraversalCacheKey(sourceId, type, direction);
+        this.traversalCache.set(cacheKey, {
+            nodeIds: new Set(targetIds),
+            timestamp: Date.now()
+        });
+        logger.debug('Cached traversal result', { sourceId, type, direction, targetCount: targetIds.length });
+    }
+
+    getTraversalResult(sourceId: string, type: string, direction: "IN" | "OUT" | undefined): Set<string> | null {
+        const cacheKey = this.getTraversalCacheKey(sourceId, type, direction);
+        const cached = this.traversalCache.get(cacheKey);
+
+        if (!cached) {
+            // Try to build from adjacency lists
+            const result = new Set<string>();
+            
+            if (!direction || direction === "OUT") {
+                const outgoing = this.adjacencyLists.get(sourceId)?.get(type);
+                if (outgoing) {
+                    for (const targetId of outgoing) {
+                        result.add(targetId);
+                    }
+                }
+            }
+            
+            if (!direction || direction === "IN") {
+                const incoming = this.reverseAdjacencyLists.get(sourceId)?.get(type);
+                if (incoming) {
+                    for (const sourceId of incoming) {
+                        result.add(sourceId);
+                    }
+                }
+            }
+
+            if (result.size > 0) {
+                this.traversalCache.set(cacheKey, {
+                    nodeIds: result,
+                    timestamp: Date.now()
+                });
+                this.recordTraversalHit(cacheKey);
+                return result;
+            }
+
+            this.recordTraversalMiss(cacheKey);
+            return null;
+        }
+
+        if (Date.now() - cached.timestamp > this.ttl) {
+            this.traversalCache.delete(cacheKey);
+            this.recordTraversalMiss(cacheKey);
+            return null;
+        }
+
+        this.recordTraversalHit(cacheKey);
+        return cached.nodeIds;
+    }
+
+    private getTraversalCacheKey(sourceId: string, type: string, direction: "IN" | "OUT" | undefined): string {
+        return `${sourceId}:${type}:${direction || 'both'}`;
+    }
+
+    private recordTraversalHit(cacheKey: string): void {
+        const stats = this.traversalStats.get(cacheKey) || { hits: 0, misses: 0, avgResponseTime: 0 };
+        stats.hits++;
+        this.traversalStats.set(cacheKey, stats);
+    }
+
+    private recordTraversalMiss(cacheKey: string): void {
+        const stats = this.traversalStats.get(cacheKey) || { hits: 0, misses: 0, avgResponseTime: 0 };
+        stats.misses++;
+        this.traversalStats.set(cacheKey, stats);
+    }
+
+    recordTraversalResponseTime(cacheKey: string, responseTime: number): void {
+        const stats = this.traversalStats.get(cacheKey) || { hits: 0, misses: 0, avgResponseTime: 0 };
+        const totalResponses = stats.hits + stats.misses;
+        stats.avgResponseTime = (stats.avgResponseTime * totalResponses + responseTime) / (totalResponses + 1);
+        this.traversalStats.set(cacheKey, stats);
+    }
+
+    getTraversalStats(): Map<string, { hits: number; misses: number; avgResponseTime: number }> {
+        return new Map(this.traversalStats);
     }
 
     // Index operations
@@ -302,6 +445,19 @@ export class CacheManager {
         return new Map(this.indexStats);
     }
 
+    // Public methods to access indexes
+    public getTypeIndex(): Map<string, Set<string>> {
+        return this.typeIndex;
+    }
+
+    public getPropertyIndexes(): Map<string, Map<string, Set<string>>> {
+        return this.propertyIndexes;
+    }
+
+    public getRelationshipTypeIndex(): Map<string, Set<string>> {
+        return this.relationshipTypeIndex;
+    }
+
     // Helper methods
     private evictOldest<T>(cache: Map<string, { timestamp: number } & T>): void {
         let oldestKey: string | null = null;
@@ -350,5 +506,208 @@ export class CacheManager {
         this.propertyIndexes.clear();
         this.typeIndex.clear();
         this.relationshipTypeIndex.clear();
+        this.traversalCache.clear(); // Clear traversal cache as well
+        this.adjacencyLists.clear();
+        this.reverseAdjacencyLists.clear();
+    }
+
+    private async persistDatabaseCache(): Promise<void> {
+        if (!this.dbCacheConfig.enabled) return;
+
+        try {
+            // Save indexes
+            const indexData = {
+                typeIndex: this.serializeIndex(this.typeIndex),
+                propertyIndexes: this.serializePropertyIndexes(),
+                relationshipTypeIndex: this.serializeIndex(this.relationshipTypeIndex),
+                adjacencyLists: this.serializeAdjacencyLists(),
+                reverseAdjacencyLists: this.serializeReverseAdjacencyLists(),
+                timestamp: Date.now()
+            };
+
+            await fs.writeFile(
+                path.join(this.dbCacheConfig.directory, 'indexes.cache.json'),
+                JSON.stringify(indexData),
+                'utf-8'
+            );
+
+            // Save frequently accessed nodes
+            const nodeStats = this.getIndexStats();
+            const frequentNodes = Array.from(nodeStats.entries())
+                .filter(([_, stats]) => stats.hits > 5)
+                .map(([key]) => key);
+
+            const nodeCacheData = {
+                nodes: frequentNodes.map(id => this.getNode(id)).filter(Boolean),
+                timestamp: Date.now()
+            };
+
+            await fs.writeFile(
+                path.join(this.dbCacheConfig.directory, 'nodes.cache.json'),
+                JSON.stringify(nodeCacheData),
+                'utf-8'
+            );
+
+            // Save traversal cache results
+            const traversalCacheData = {
+                paths: Array.from(this.traversalCache.entries()).map(([key, value]) => ({
+                    key,
+                    nodeIds: Array.from(value.nodeIds),
+                    timestamp: value.timestamp,
+                    accessCount: (this.indexStats.get(key)?.hits || 0)
+                })).filter(entry => this.indexStats.get(entry.key)?.hits || 0 > 2), // Only cache frequently accessed paths
+                timestamp: Date.now()
+            };
+
+            await fs.writeFile(
+                path.join(this.dbCacheConfig.directory, 'traversal.cache.json'),
+                JSON.stringify(traversalCacheData),
+                'utf-8'
+            );
+
+            logger.debug('Database cache persisted successfully', {
+                indexCount: Object.keys(indexData.typeIndex).length,
+                nodeCount: nodeCacheData.nodes.length,
+                traversalPathCount: traversalCacheData.paths.length
+            });
+        } catch (error) {
+            logger.error('Failed to persist database cache', { error });
+        }
+    }
+
+    private restoreCacheData(data: any, filename: string): void {
+        try {
+            if (filename === 'indexes.cache.json') {
+                this.restoreIndexes(data);
+            } else if (filename === 'nodes.cache.json') {
+                this.restoreNodes(data);
+            } else if (filename === 'traversal.cache.json') {
+                this.restoreTraversalCache(data);
+            }
+        } catch (error) {
+            logger.error('Error restoring cache data', { filename, error });
+        }
+    }
+
+    private restoreTraversalCache(data: any): void {
+        if (!data.paths) return;
+
+        for (const path of data.paths) {
+            this.traversalCache.set(path.key, {
+                nodeIds: new Set(path.nodeIds),
+                timestamp: path.timestamp
+            });
+            // Restore access stats
+            if (path.accessCount) {
+                this.indexStats.set(path.key, {
+                    hits: path.accessCount,
+                    misses: 0
+                });
+            }
+        }
+        logger.debug('Restored traversal cache', { pathCount: data.paths.length });
+    }
+
+    private restoreIndexes(data: any): void {
+        if (!data.typeIndex || !data.propertyIndexes || !data.relationshipTypeIndex) return;
+
+        // Restore type index
+        for (const [type, nodeIds] of Object.entries(data.typeIndex)) {
+            this.typeIndex.set(type, new Set(nodeIds as string[]));
+        }
+
+        // Restore property indexes
+        for (const [indexKey, valueMap] of Object.entries(data.propertyIndexes)) {
+            const propertyIndex = new Map<string, Set<string>>();
+            for (const [valueKey, nodeIds] of Object.entries(valueMap as Record<string, string[]>)) {
+                propertyIndex.set(valueKey, new Set(nodeIds));
+            }
+            this.propertyIndexes.set(indexKey, propertyIndex);
+        }
+
+        // Restore relationship type index
+        for (const [type, relIds] of Object.entries(data.relationshipTypeIndex)) {
+            this.relationshipTypeIndex.set(type, new Set(relIds as string[]));
+        }
+
+        // Restore adjacency lists
+        if (data.adjacencyLists) {
+            for (const [nodeId, typeMap] of Object.entries(data.adjacencyLists)) {
+                const nodeAdjList = new Map();
+                for (const [type, targetIds] of Object.entries(typeMap as Record<string, string[]>)) {
+                    nodeAdjList.set(type, new Set(targetIds));
+                }
+                this.adjacencyLists.set(nodeId, nodeAdjList);
+            }
+        }
+
+        // Restore reverse adjacency lists
+        if (data.reverseAdjacencyLists) {
+            for (const [nodeId, typeMap] of Object.entries(data.reverseAdjacencyLists)) {
+                const nodeAdjList = new Map();
+                for (const [type, sourceIds] of Object.entries(typeMap as Record<string, string[]>)) {
+                    nodeAdjList.set(type, new Set(sourceIds));
+                }
+                this.reverseAdjacencyLists.set(nodeId, nodeAdjList);
+            }
+        }
+
+        logger.debug('Restored indexes and adjacency lists from cache', {
+            typeCount: Object.keys(data.typeIndex).length,
+            propertyIndexCount: Object.keys(data.propertyIndexes).length,
+            relationshipTypeCount: Object.keys(data.relationshipTypeIndex).length,
+            adjacencyListCount: Object.keys(data.adjacencyLists || {}).length,
+            reverseAdjacencyListCount: Object.keys(data.reverseAdjacencyLists || {}).length
+        });
+    }
+
+    private restoreNodes(data: any): void {
+        if (!data.nodes) return;
+
+        for (const node of data.nodes) {
+            this.cacheNode(node);
+        }
+        logger.debug('Restored nodes from cache', { nodeCount: data.nodes.length });
+    }
+
+    private serializeIndex(index: Map<string, Set<string>>): Record<string, string[]> {
+        const serialized: Record<string, string[]> = {};
+        for (const [key, value] of index.entries()) {
+            serialized[key] = Array.from(value);
+        }
+        return serialized;
+    }
+
+    private serializePropertyIndexes(): Record<string, Record<string, string[]>> {
+        const serialized: Record<string, Record<string, string[]>> = {};
+        for (const [key, valueMap] of this.propertyIndexes.entries()) {
+            serialized[key] = {};
+            for (const [valueKey, nodeIds] of valueMap.entries()) {
+                serialized[key][valueKey] = Array.from(nodeIds);
+            }
+        }
+        return serialized;
+    }
+
+    private serializeAdjacencyLists(): Record<string, Record<string, string[]>> {
+        const serialized: Record<string, Record<string, string[]>> = {};
+        for (const [nodeId, typeMap] of this.adjacencyLists.entries()) {
+            serialized[nodeId] = {};
+            for (const [type, targetIds] of typeMap.entries()) {
+                serialized[nodeId][type] = Array.from(targetIds);
+            }
+        }
+        return serialized;
+    }
+
+    private serializeReverseAdjacencyLists(): Record<string, Record<string, string[]>> {
+        const serialized: Record<string, Record<string, string[]>> = {};
+        for (const [nodeId, typeMap] of this.reverseAdjacencyLists.entries()) {
+            serialized[nodeId] = {};
+            for (const [type, sourceIds] of typeMap.entries()) {
+                serialized[nodeId][type] = Array.from(sourceIds);
+            }
+        }
+        return serialized;
     }
 }

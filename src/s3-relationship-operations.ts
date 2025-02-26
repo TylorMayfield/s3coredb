@@ -29,11 +29,11 @@ export class S3RelationshipOperations {
     this.nodeOperations = new S3NodeOperations(config);
   }
 
-  private getRelationshipKey(relationship: Relationship): string {
-    return `relationships/${relationship.type}/${relationship.from}__${relationship.to}.json`;
+  getRelationshipKey(relationship: Relationship, shardPath: string): string {
+    return `relationships/${shardPath}/${relationship.from}__${relationship.to}.json`;
   }
 
-  async createRelationship(relationship: Relationship, auth: AuthContext): Promise<void> {
+  async createRelationship(relationship: Relationship, auth: AuthContext, shardPath: string): Promise<void> {
     const { from, to, type } = relationship;
 
     // Verify access to both nodes
@@ -47,7 +47,7 @@ export class S3RelationshipOperations {
       throw new Error("Permission denied or nodes not found");
     }
 
-    const key = this.getRelationshipKey(relationship);
+    const key = this.getRelationshipKey(relationship, shardPath);
     try {
       const putObjectCommand = new PutObjectCommand({
         Bucket: this.bucket,
@@ -219,7 +219,7 @@ export class S3RelationshipOperations {
   }
 
   async deleteRelationship(relationship: Relationship): Promise<void> {
-    const key = this.getRelationshipKey(relationship);
+    const key = this.getRelationshipKey(relationship, relationship.type);
     try {
       await this.s3.send(new DeleteObjectCommand({
         Bucket: this.bucket,

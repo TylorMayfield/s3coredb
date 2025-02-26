@@ -7,9 +7,11 @@ import { logger } from './logger';
 export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapter {
     private nodeOperations: S3NodeOperations;
     private relationshipOperations: S3RelationshipOperations;
+    private config: S3CoreDBConfig;
 
-    constructor(config: S3CoreDBConfig) {
-        super();
+    constructor(config: S3CoreDBConfig, numShards: number = 256, shardLevels: number = 2) {
+        super(undefined, numShards, shardLevels);
+        this.config = config;
         this.nodeOperations = new S3NodeOperations(config);
         this.relationshipOperations = new S3RelationshipOperations(config);
         logger.info('S3StorageAdapter initialized', { 
@@ -20,11 +22,23 @@ export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapt
 
     async createNode(node: Node, auth: AuthContext): Promise<Node> {
         this.validateNode(node);
-        return this.nodeOperations.createNode(node, auth);
+        const shardPath = this.getShardPathForType(node.type, node.id);
+        return this.nodeOperations.createNode(node, auth, shardPath);
     }
 
     async getNode(id: string, auth: AuthContext): Promise<Node | null> {
-        return this.nodeOperations.getNode(id, auth);
+        // Try cache first
+        const cachedNode = await this.getCachedNode(id, auth);
+        if (cachedNode) {
+            return cachedNode;
+        }
+        
+        const node = await this.nodeOperations.getNode(id, auth);
+        if (node && this.canAccessNode(node, auth)) {
+            this.cache.cacheNode(node);
+            return node;
+        }
+        return null;
     }
 
     async getNodeTypeFromId(id: string): Promise<string | null> {
@@ -32,11 +46,11 @@ export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapt
     }
 
     async queryNodes(query: any, auth: AuthContext): Promise<Node[]> {
-        return this.nodeOperations.queryNodes(query, auth);
+        const nodes = await this.nodeOperations.queryNodes(query);
+        return nodes.filter(node => this.canAccessNode(node, auth));
     }
 
     async queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult> {
-        // Get all nodes first using existing query functionality
         const allNodes = await this.queryNodes({}, auth);
         let filteredNodes = [...allNodes];
 
@@ -58,11 +72,11 @@ export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapt
         // Apply sorting
         if (options.sort?.length) {
             filteredNodes.sort((a, b) => {
-                for (const sort of options.sort!) {
-                    const aVal = this.getNestedValue(a, sort.field);
-                    const bVal = this.getNestedValue(b, sort.field);
+                for (const { field, direction } of options.sort!) {
+                    const aVal = this.getNestedValue(a, field);
+                    const bVal = this.getNestedValue(b, field);
                     if (aVal !== bVal) {
-                        return sort.direction === 'asc' ? 
+                        return direction === 'asc' ? 
                             (aVal < bVal ? -1 : 1) : 
                             (aVal < bVal ? 1 : -1);
                     }
@@ -109,33 +123,25 @@ export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapt
         }
 
         // Apply pagination
-        const start = options.pagination?.offset || 0;
-        const end = options.pagination ? start + options.pagination.limit : undefined;
-        const paginatedNodes = filteredNodes.slice(start, end);
+        const total = filteredNodes.length;
+        if (options.pagination) {
+            const { offset = 0, limit = 10 } = options.pagination;
+            filteredNodes = filteredNodes.slice(offset, offset + limit);
+        }
 
         return {
-            items: paginatedNodes,
-            total: filteredNodes.length,
-            hasMore: end ? end < filteredNodes.length : false,
+            items: filteredNodes,
+            total,
+            hasMore: options.pagination ? 
+                (options.pagination.offset || 0) + filteredNodes.length < total : false,
             aggregations
         };
     }
 
     private matchesFilterCondition(node: Node, filter: any): boolean {
-        if (!filter || !filter.field) {
-            // Handle nested filter groups
-            if (filter.logic && filter.filters) {
-                if (filter.logic === 'and') {
-                    return filter.filters.every((f: any) => this.matchesFilterCondition(node, f));
-                } else if (filter.logic === 'or') {
-                    return filter.filters.some((f: any) => this.matchesFilterCondition(node, f));
-                }
-            }
-            return false;
-        }
-
+        if (!filter.field) return true;
         const value = this.getNestedValue(node, filter.field);
-        if (value == null) return false;
+        if (value === undefined) return false;
 
         switch (filter.operator) {
             case 'eq':
@@ -144,6 +150,10 @@ export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapt
                 return typeof value === 'number' && value > filter.value;
             case 'lt':
                 return typeof value === 'number' && value < filter.value;
+            case 'gte':
+                return typeof value === 'number' && value >= filter.value;
+            case 'lte':
+                return typeof value === 'number' && value <= filter.value;
             case 'contains':
                 if (Array.isArray(value)) {
                     return value.includes(filter.value);
@@ -156,15 +166,23 @@ export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapt
 
     async createRelationship(relationship: Relationship, auth: AuthContext): Promise<void> {
         this.validateRelationship(relationship);
-        return this.relationshipOperations.createRelationship(relationship, auth);
+        const shardPath = this.getShardPathForRelationship(
+            relationship.type,
+            relationship.from,
+            relationship.to
+        );
+        return this.relationshipOperations.createRelationship(relationship, auth, shardPath);
     }
 
     async queryRelatedNodes(
         from: string,
         type: string,
         auth: AuthContext,
-        options?: { direction?: "IN" | "OUT" }
+        options?: { direction?: "IN" | "OUT"; skipCache?: boolean }
     ): Promise<Node[]> {
+        if (!options?.skipCache) {
+            return this.queryRelatedNodesWithCache(from, type, auth, options);
+        }
         return this.relationshipOperations.queryRelatedNodes(from, type, auth, options);
     }
 
