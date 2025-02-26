@@ -47,8 +47,8 @@ async function main() {
     const testScenarios = [
         { name: "Small Dataset", size: 1000, densities: [1, 2, 3], traversalSamples: 100, readSampleSize: 100, advancedSampleSize: 100, querySampleSize: 100 },
         { name: "Medium Dataset", size: 10000, densities: [1, 2, 3], traversalSamples: 100, readSampleSize: 100, advancedSampleSize: 100, querySampleSize: 100 },
-        // { name: "Large Dataset", size: 50000, densities: [1, 2, 3], traversalSamples: 100, readSampleSize: 100, advancedSampleSize: 100, querySampleSize: 100 },
-        // { name: "Huge Dataset", size: 100000, densities: [1, 2, 3], traversalSamples: 100, readSampleSize: 100, advancedSampleSize: 100, querySampleSize: 100 },
+         { name: "Large Dataset", size: 50000, densities: [1, 2, 3], traversalSamples: 100, readSampleSize: 100, advancedSampleSize: 100, querySampleSize: 100 },
+         { name: "Huge Dataset", size: 100000, densities: [1, 2, 3], traversalSamples: 100, readSampleSize: 100, advancedSampleSize: 100, querySampleSize: 100 },
     ];
 
     for (const { name, size, densities, traversalSamples, readSampleSize, advancedSampleSize, querySampleSize } of testScenarios) {
