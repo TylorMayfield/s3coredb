@@ -1,6 +1,7 @@
 import { S3CoreDB, LocalStorageAdapter } from '../src';
 import {
     NodeNotFoundError,
+    RelationshipNotFoundError,
     PermissionDeniedError,
     ValidationError,
     ConcurrentModificationError
@@ -67,7 +68,7 @@ async function main() {
         console.log('✓ Created user:', friend.properties.name);
 
         // Create a relationship
-        const relationship = await db.createRelationship({
+        await db.createRelationship({
             from: user.id,
             to: friend.id,
             type: 'FOLLOWS',
@@ -77,8 +78,7 @@ async function main() {
                 notificationEnabled: true
             }
         });
-        console.log('✓ Created relationship: FOLLOWS');
-        console.log(`  Version: ${relationship.version}\n`);
+        console.log('✓ Created relationship: FOLLOWS\n');
 
         // ===== READ =====
         console.log('📖 READ Operations\n');
@@ -124,21 +124,21 @@ async function main() {
         console.log(`  Version: ${user.version} → ${updatedUser.version}`);
 
         // Update relationship properties
-        const updatedRelationship = await db.updateRelationship(
+        await db.updateRelationship(
             user.id,
             friend.id,
             'FOLLOWS',
             {
                 properties: {
-                    since: relationship.properties?.since || new Date().toISOString(),
+                    since: new Date().toISOString(),
                     notificationEnabled: false,
                     closeFriend: true
                 }
             }
         );
         console.log('✓ Updated relationship');
-        console.log(`  Close friend: ${updatedRelationship.properties?.closeFriend}`);
-        console.log(`  Version: ${relationship.version} → ${updatedRelationship.version}\n`);
+        console.log('  Set close friend: true');
+        console.log('  Notifications disabled\n');
 
         // ===== DELETE =====
         console.log('🗑️  DELETE Operations\n');
@@ -241,15 +241,12 @@ async function main() {
         console.log(`Custom limit query: ${limitedQuery.length} results (limit: 1)`);
 
         // Advanced query with sorting
-        const sortedQuery = await db.queryNodesAdvanced(
-            { type: 'user' },
-            {
-                sortBy: 'properties.name',
-                sortOrder: 'asc',
-                limit: 10
-            }
-        );
-        console.log(`Sorted query: ${sortedQuery.length} results\n`);
+        const sortedQuery = await db.queryNodesAdvanced({
+            filter: { field: 'type', operator: 'eq', value: 'user' },
+            sort: [{ field: 'properties.name', direction: 'asc' }],
+            pagination: { limit: 10, offset: 0 }
+        });
+        console.log(`Sorted query: ${sortedQuery.items.length} results\n`);
 
         // ===== SUMMARY =====
         console.log('✅ All CRUD operations completed successfully!\n');

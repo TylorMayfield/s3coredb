@@ -417,13 +417,13 @@ async function main() {
         console.log(`Version incremented: ${alice.version} → ${updatedAlice.version}`);
 
         // Update a relationship property
-        const relationship = await db.updateRelationship(
+        await db.updateRelationship(
             alice.id,
             bob.id,
             'FOLLOWS',
             {
                 properties: {
-                    since: alice.properties.since || new Date().toISOString(),
+                    since: new Date().toISOString(),
                     closeFriend: true
                 }
             }
@@ -514,7 +514,7 @@ async function main() {
         console.log(`Verification: Node exists? ${deletedNode !== null ? 'Yes' : 'No (correctly deleted)'}`);
 
         // Create and delete a temporary relationship
-        const tempRelationship = await db.createRelationship({
+        await db.createRelationship({
             from: alice.id,
             to: charlie.id,
             type: 'TEMP_LINK',
@@ -544,16 +544,12 @@ async function main() {
         console.log(`Custom limit query returned ${usersLimited.length} users (limit: 2)`);
 
         // Advanced query with sorting and pagination
-        const advancedQuery = await db.queryNodesAdvanced(
-            { type: 'user' },
-            {
-                sortBy: 'properties.name',
-                sortOrder: 'asc',
-                limit: 10,
-                offset: 0
-            }
-        );
-        console.log(`Advanced query with sorting returned ${advancedQuery.length} users`);
+        const advancedQuery = await db.queryNodesAdvanced({
+            filter: { field: 'type', operator: 'eq', value: 'user' },
+            sort: [{ field: 'properties.name', direction: 'asc' }],
+            pagination: { limit: 10, offset: 0 }
+        });
+        console.log(`Advanced query with sorting returned ${advancedQuery.items.length} users`);
 
         console.log("\n✅ All CRUD Operations Demonstrated Successfully!");
         console.log("💾 Enhanced data model has been persisted to the 'db-data' directory.");
