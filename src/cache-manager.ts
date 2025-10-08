@@ -275,19 +275,21 @@ export class CacheManager {
         this.typeIndex.get(node.type)!.add(node.id);
 
         // Add to property indexes
-        for (const [key, value] of Object.entries(node.properties)) {
-            const indexKey = `${node.type}:${key}`;
-            if (!this.propertyIndexes.has(indexKey)) {
-                this.propertyIndexes.set(indexKey, new Map());
+        if (node.properties && typeof node.properties === 'object') {
+            for (const [key, value] of Object.entries(node.properties)) {
+                const indexKey = `${node.type}:${key}`;
+                if (!this.propertyIndexes.has(indexKey)) {
+                    this.propertyIndexes.set(indexKey, new Map());
+                }
+                const propertyIndex = this.propertyIndexes.get(indexKey)!;
+                
+                // Handle different property types
+                const valueString = JSON.stringify(value);
+                if (!propertyIndex.has(valueString)) {
+                    propertyIndex.set(valueString, new Set());
+                }
+                propertyIndex.get(valueString)!.add(node.id);
             }
-            const propertyIndex = this.propertyIndexes.get(indexKey)!;
-            
-            // Handle different property types
-            const valueString = JSON.stringify(value);
-            if (!propertyIndex.has(valueString)) {
-                propertyIndex.set(valueString, new Set());
-            }
-            propertyIndex.get(valueString)!.add(node.id);
         }
     }
 
@@ -344,6 +346,8 @@ export class CacheManager {
     }
 
     private updatePrefixIndexes(node: Node): void {
+        if (!node.properties || typeof node.properties !== 'object') return;
+        
         for (const [key, value] of Object.entries(node.properties)) {
             if (typeof value === 'string') {
                 const indexKey = `${node.type}:${key}`;

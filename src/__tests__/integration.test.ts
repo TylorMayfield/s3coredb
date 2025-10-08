@@ -275,12 +275,12 @@ describe('Integration Tests', () => {
             expect(secretResults.length).toBe(3);
 
             // Admin can see everything
-            const adminAuth: AuthContext = {
+            const fullAdminAuth: AuthContext = {
                 userPermissions: [],
                 isAdmin: true
             };
 
-            const adminResults = await db.queryNodes({ type: 'document' }, adminAuth);
+            const adminResults = await db.queryNodes({ type: 'document' }, fullAdminAuth);
             expect(adminResults.length).toBe(3);
         });
 

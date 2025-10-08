@@ -1,6 +1,8 @@
 import { Node, AuthContext, StorageAdapter, Relationship, QueryOptions, QueryResult } from "./types";
 import { logger } from './logger';
 import { BaseStorageAdapter } from "./base-storage-adapter";
+import { NodeNotFoundError, PermissionDeniedError, RelationshipNotFoundError, ConcurrentModificationError } from './errors';
+import { validateQueryLimit } from './validator';
 
 class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
     private storage: Map<string, Map<string, Node>> = new Map(); // type -> (id -> Node)
@@ -43,14 +45,75 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         return null;
     }
 
+    async updateNode(id: string, updates: Partial<Node>, auth: AuthContext): Promise<Node> {
+        logger.info(`Updating node with id: ${id}`);
+        this.validateNodeForUpdate(updates);
+
+        const node = await this.getNode(id, auth);
+        if (!node) {
+            throw new NodeNotFoundError(id);
+        }
+
+        if (!this.canAccessNode(node, auth)) {
+            throw new PermissionDeniedError(node.permissions, auth.userPermissions, `node ${id}`);
+        }
+
+        // Check for concurrent modification if version is provided
+        if (updates.version !== undefined && node.version !== updates.version) {
+            throw new ConcurrentModificationError(id, updates.version, node.version || 1);
+        }
+
+        // Apply updates
+        const updatedNode: Node = {
+            ...node,
+            ...updates,
+            id: node.id, // Preserve original ID
+            type: node.type, // Preserve original type
+            version: (node.version || 1) + 1 // Increment version
+        };
+
+        this.validateNode(updatedNode);
+
+        // Update in storage
+        if (this.storage.has(node.type)) {
+            this.storage.get(node.type)!.set(id, updatedNode);
+        }
+
+        this.cache.cacheNode(updatedNode);
+        return updatedNode;
+    }
+
+    async deleteNode(id: string, auth: AuthContext): Promise<void> {
+        logger.info(`Deleting node with id: ${id}`);
+        
+        const node = await this.getNode(id, auth);
+        if (!node) {
+            throw new NodeNotFoundError(id);
+        }
+
+        if (!this.canAccessNode(node, auth)) {
+            throw new PermissionDeniedError(node.permissions, auth.userPermissions, `node ${id}`);
+        }
+
+        // Remove from storage
+        if (this.storage.has(node.type)) {
+            this.storage.get(node.type)!.delete(id);
+        }
+
+        // Clear from cache
+        // Note: We don't have a removeNode method in cache, so it will expire naturally
+    }
+
     async getNodeTypeFromId(id: string): Promise<string | null> {
         logger.info(`Fetching node type for id: ${id}`);
         const node = await this.getNode(id, { userPermissions: ['read'], isAdmin: true });
         return node ? node.type : null;
     }
 
-    async queryNodes(query: any, auth: AuthContext): Promise<Node[]> {
+    async queryNodes(query: any, auth: AuthContext, options?: { limit?: number; offset?: number }): Promise<Node[]> {
         logger.info(`Querying nodes with query: ${JSON.stringify(query)}`);
+        const limit = validateQueryLimit(options?.limit);
+        const offset = options?.offset || 0;
         const results: Node[] = [];
 
         // If type is specified, only search in that type's map
@@ -71,7 +134,9 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
                 }
             }
         }
-        return results;
+        
+        // Apply pagination
+        return results.slice(offset, offset + limit);
     }
 
     async queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult> {
@@ -140,15 +205,87 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         typeMap.set(key, relationships);
     }
 
+    async updateRelationship(from: string, to: string, type: string, updates: Partial<Relationship>, auth: AuthContext): Promise<void> {
+        logger.info(`Updating relationship from ${from} to ${to} of type ${type}`);
+        this.validateRelationshipForUpdate(updates);
+
+        const fromNode = await this.getNode(from, auth);
+        const toNode = await this.getNode(to, auth);
+
+        if (!fromNode || !toNode) {
+            throw new NodeNotFoundError(`${from} or ${to}`);
+        }
+
+        if (!this.canAccessNode(fromNode, auth) || !this.canAccessNode(toNode, auth)) {
+            throw new PermissionDeniedError([], auth.userPermissions, `relationship ${from}->${to}`);
+        }
+
+        const typeMap = this.relationships.get(type);
+        if (!typeMap) {
+            throw new RelationshipNotFoundError(from, to, type);
+        }
+
+        const key = `${from}__${to}`;
+        const rels = typeMap.get(key);
+        if (!rels || rels.length === 0) {
+            throw new RelationshipNotFoundError(from, to, type);
+        }
+
+        // Update the first matching relationship
+        const relationship = rels[0];
+        const updatedRel: Relationship = {
+            ...relationship,
+            ...updates,
+            from: relationship.from, // Preserve
+            to: relationship.to, // Preserve
+            type: relationship.type, // Preserve
+            version: (relationship.version || 1) + 1
+        };
+
+        rels[0] = updatedRel;
+        this.cache.cacheRelationship(updatedRel);
+    }
+
+    async deleteRelationship(from: string, to: string, type: string, auth: AuthContext): Promise<void> {
+        logger.info(`Deleting relationship from ${from} to ${to} of type ${type}`);
+
+        const fromNode = await this.getNode(from, auth);
+        const toNode = await this.getNode(to, auth);
+
+        if (!fromNode || !toNode) {
+            throw new NodeNotFoundError(`${from} or ${to}`);
+        }
+
+        if (!this.canAccessNode(fromNode, auth) || !this.canAccessNode(toNode, auth)) {
+            throw new PermissionDeniedError([], auth.userPermissions, `relationship ${from}->${to}`);
+        }
+
+        const typeMap = this.relationships.get(type);
+        if (!typeMap) {
+            throw new RelationshipNotFoundError(from, to, type);
+        }
+
+        const key = `${from}__${to}`;
+        const exists = typeMap.has(key);
+        if (!exists) {
+            throw new RelationshipNotFoundError(from, to, type);
+        }
+
+        typeMap.delete(key);
+        // Cache will expire naturally
+    }
+
     async queryRelatedNodes(
         from: string,
         type: string,
         auth: AuthContext,
-        options?: { direction?: "IN" | "OUT"; skipCache?: boolean }
+        options?: { direction?: "IN" | "OUT"; skipCache?: boolean; limit?: number }
     ): Promise<Node[]> {
         if (!options?.skipCache) {
             return this.queryRelatedNodesWithCache(from, type, auth, options);
         }
+
+        const limit = validateQueryLimit(options?.limit);
 
         logger.info(`Querying related nodes from ${from} of type ${type}`);
         const fromNode = await this.getNode(from, auth);
@@ -173,7 +310,7 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
             }
         }
 
-        return relatedNodes;
+        return relatedNodes.slice(0, limit);
     }
 
     private convertFilterToQuery(filter?: QueryOptions['filter']): any {

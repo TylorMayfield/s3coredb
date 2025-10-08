@@ -2,6 +2,8 @@ import { Node, Relationship, StorageAdapter, AuthContext, QueryOptions, QueryRes
 import { logger } from './logger';
 import { CacheManager } from './cache-manager';
 import { ShardManager } from './shard-manager';
+import { Validator, DEFAULT_QUERY_LIMIT, validateQueryLimit } from './validator';
+import { PermissionDeniedError, NodeNotFoundError, ValidationError, ConcurrentModificationError } from './errors';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -224,14 +226,18 @@ export abstract class BaseStorageAdapter implements StorageAdapter {
 
     abstract createNode(node: Node, auth: AuthContext): Promise<Node>;
     abstract getNode(id: string, auth: AuthContext): Promise<Node | null>;
+    abstract updateNode(id: string, updates: Partial<Node>, auth: AuthContext): Promise<Node>;
+    abstract deleteNode(id: string, auth: AuthContext): Promise<void>;
     abstract getNodeTypeFromId(id: string): Promise<string | null>;
-    abstract queryNodes(query: any, auth: AuthContext): Promise<Node[]>;
+    abstract queryNodes(query: any, auth: AuthContext, options?: { limit?: number; offset?: number }): Promise<Node[]>;
     abstract createRelationship(relationship: Relationship, auth: AuthContext): Promise<void>;
+    abstract updateRelationship(from: string, to: string, type: string, updates: Partial<Relationship>, auth: AuthContext): Promise<void>;
+    abstract deleteRelationship(from: string, to: string, type: string, auth: AuthContext): Promise<void>;
     abstract queryRelatedNodes(
         from: string,
         type: string,
         auth: AuthContext,
-        options?: { direction?: "IN" | "OUT"; skipCache?: boolean }
+        options?: { direction?: "IN" | "OUT"; skipCache?: boolean; limit?: number }
     ): Promise<Node[]>;
     abstract queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult>;
 
@@ -291,31 +297,42 @@ export abstract class BaseStorageAdapter implements StorageAdapter {
     }
 
     protected validateNode(node: Node): void {
-        if (!node.type || typeof node.type !== 'string') {
-            throw new Error('Node must have a valid type string');
-        }
-        if (!node.permissions || !Array.isArray(node.permissions)) {
-            throw new Error('Node must have a permissions array');
-        }
-        if (!node.properties || typeof node.properties !== 'object') {
-            throw new Error('Node must have a properties object');
-        }
+        Validator.validateNode(node);
         // Add node to cache after validation
         this.cache.cacheNode(node);
     }
 
     protected validateRelationship(relationship: Relationship): void {
-        if (!relationship.from || typeof relationship.from !== 'string') {
-            throw new Error('Relationship must have a valid from ID');
-        }
-        if (!relationship.to || typeof relationship.to !== 'string') {
-            throw new Error('Relationship must have a valid to ID');
-        }
-        if (!relationship.type || typeof relationship.type !== 'string') {
-            throw new Error('Relationship must have a valid type string');
-        }
+        Validator.validateRelationship(relationship);
         // Add relationship to cache after validation
         this.cache.cacheRelationship(relationship);
+    }
+
+    protected validateNodeForUpdate(updates: Partial<Node>): void {
+        if (Object.keys(updates).length === 0) {
+            throw new ValidationError('updates', 'Update object cannot be empty');
+        }
+
+        // Validate each field if present
+        Validator.validateNode(updates);
+
+        // Don't allow updating id or version manually
+        if ('id' in updates) {
+            throw new ValidationError('id', 'Cannot update node ID');
+        }
+    }
+
+    protected validateRelationshipForUpdate(updates: Partial<Relationship>): void {
+        if (Object.keys(updates).length === 0) {
+            throw new ValidationError('updates', 'Update object cannot be empty');
+        }
+
+        Validator.validateRelationship(updates);
+
+        // Don't allow updating from/to/type
+        if ('from' in updates || 'to' in updates || 'type' in updates) {
+            throw new ValidationError('updates', 'Cannot update relationship from, to, or type');
+        }
     }
 
     protected clearCache(): void {

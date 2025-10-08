@@ -6,6 +6,8 @@ import * as path from 'path';
 import { BaseStorageAdapter } from "./base-storage-adapter";
 import { glob } from 'glob';
 import { promisify } from 'util';
+import { NodeNotFoundError, PermissionDeniedError, RelationshipNotFoundError, ConcurrentModificationError } from './errors';
+import { validateQueryLimit } from './validator';
 
 const mkdir = promisify(fs.mkdir);
 const writeFile = promisify(fs.writeFile);
@@ -89,6 +91,64 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         return node;
     }
 
+    async updateNode(id: string, updates: Partial<Node>, auth: AuthContext): Promise<Node> {
+        await this.initialized;
+        logger.info(`Updating node with id: ${id}`);
+        this.validateNodeForUpdate(updates);
+
+        const node = await this.getNode(id, auth);
+        if (!node) {
+            throw new NodeNotFoundError(id);
+        }
+
+        if (!this.canAccessNode(node, auth)) {
+            throw new PermissionDeniedError(node.permissions, auth.userPermissions, `node ${id}`);
+        }
+
+        // Check for concurrent modification
+        if (updates.version !== undefined && node.version !== updates.version) {
+            throw new ConcurrentModificationError(id, updates.version, node.version || 1);
+        }
+
+        // Apply updates
+        const updatedNode: Node = {
+            ...node,
+            ...updates,
+            id: node.id,
+            type: node.type,
+            version: (node.version || 1) + 1
+        };
+
+        this.validateNode(updatedNode);
+
+        // Write to filesystem
+        const filePath = this.getNodePath(updatedNode);
+        await fs.writeFile(filePath, JSON.stringify(updatedNode, null, 2));
+
+        this.cache.cacheNode(updatedNode);
+        return updatedNode;
+    }
+
+    async deleteNode(id: string, auth: AuthContext): Promise<void> {
+        await this.initialized;
+        logger.info(`Deleting node with id: ${id}`);
+
+        const node = await this.getNode(id, auth);
+        if (!node) {
+            throw new NodeNotFoundError(id);
+        }
+
+        if (!this.canAccessNode(node, auth)) {
+            throw new PermissionDeniedError(node.permissions, auth.userPermissions, `node ${id}`);
+        }
+
+        // Delete from filesystem
+        const filePath = this.getNodePath(node);
+        await fs.unlink(filePath);
+        
+        // Cache will expire naturally
+    }
+
     async getNode(id: string, auth: AuthContext): Promise<Node | null> {
         await this.initialized;
         logger.info(`Fetching node with id: ${id}`);
@@ -130,9 +190,11 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         return node?.type || null;
     }
 
-    async queryNodes(query: any, auth: AuthContext): Promise<Node[]> {
+    async queryNodes(query: any, auth: AuthContext, options?: { limit?: number; offset?: number }): Promise<Node[]> {
         await this.initialized;
         logger.info(`Querying nodes with query: ${JSON.stringify(query)}`);
+        const limit = validateQueryLimit(options?.limit);
+        const offset = options?.offset || 0;
         const results = new Map<string, Node>();
 
         // Try cache first but don't return early - always check filesystem as source of truth
@@ -180,7 +242,9 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
             logger.error('Error querying nodes:', error);
         }
 
-        return Array.from(results.values());
+        // Apply pagination
+        const allResults = Array.from(results.values());
+        return allResults.slice(offset, offset + limit);
     }
 
     async queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult> {
@@ -314,17 +378,85 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         await fs.writeFile(filePath, JSON.stringify(relationship, null, 2));
     }
 
+    async updateRelationship(from: string, to: string, type: string, updates: Partial<Relationship>, auth: AuthContext): Promise<void> {
+        await this.initialized;
+        logger.info(`Updating relationship from ${from} to ${to} of type ${type}`);
+        this.validateRelationshipForUpdate(updates);
+
+        const fromNode = await this.getNode(from, auth);
+        const toNode = await this.getNode(to, auth);
+
+        if (!fromNode || !toNode) {
+            throw new NodeNotFoundError(`${from} or ${to}`);
+        }
+
+        if (!this.canAccessNode(fromNode, auth) || !this.canAccessNode(toNode, auth)) {
+            throw new PermissionDeniedError([], auth.userPermissions, `relationship ${from}->${to}`);
+        }
+
+        // Read existing relationship
+        const existingRel = { from, to, type } as Relationship;
+        const filePath = this.getRelationshipPath(existingRel);
+        
+        try {
+            const data = await fs.readFile(filePath, 'utf8');
+            const relationship = JSON.parse(data) as Relationship;
+
+            // Apply updates
+            const updatedRel: Relationship = {
+                ...relationship,
+                ...updates,
+                from: relationship.from,
+                to: relationship.to,
+                type: relationship.type,
+                version: (relationship.version || 1) + 1
+            };
+
+            await fs.writeFile(filePath, JSON.stringify(updatedRel, null, 2));
+            this.cache.cacheRelationship(updatedRel);
+        } catch (error) {
+            throw new RelationshipNotFoundError(from, to, type);
+        }
+    }
+
+    async deleteRelationship(from: string, to: string, type: string, auth: AuthContext): Promise<void> {
+        await this.initialized;
+        logger.info(`Deleting relationship from ${from} to ${to} of type ${type}`);
+
+        const fromNode = await this.getNode(from, auth);
+        const toNode = await this.getNode(to, auth);
+
+        if (!fromNode || !toNode) {
+            throw new NodeNotFoundError(`${from} or ${to}`);
+        }
+
+        if (!this.canAccessNode(fromNode, auth) || !this.canAccessNode(toNode, auth)) {
+            throw new PermissionDeniedError([], auth.userPermissions, `relationship ${from}->${to}`);
+        }
+
+        const relationship = { from, to, type } as Relationship;
+        const filePath = this.getRelationshipPath(relationship);
+        
+        try {
+            await fs.unlink(filePath);
+        } catch (error) {
+            throw new RelationshipNotFoundError(from, to, type);
+        }
+    }
+
     async queryRelatedNodes(
         from: string,
         type: string,
         auth: AuthContext,
-        options?: { direction?: "IN" | "OUT"; skipCache?: boolean }
+        options?: { direction?: "IN" | "OUT"; skipCache?: boolean; limit?: number }
     ): Promise<Node[]> {
         await this.initialized;
         // Use cache if available
         if (!options?.skipCache) {
             return this.queryRelatedNodesWithCache(from, type, auth, options);
         }
+
+        const limit = validateQueryLimit(options?.limit);
 
         logger.info(`Querying related nodes from ${from} of type ${type}`);
         const fromNode = await this.getNode(from, auth);
@@ -347,13 +479,16 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
                     const node = await this.getNode(targetId, auth);
                     if (node && this.canAccessNode(node, auth)) {
                         relatedNodes.push(node);
+                        if (relatedNodes.length >= limit) {
+                            break; // Stop when limit reached
+                        }
                     }
                 }
             }
         } catch (error) {
             logger.error('Error querying related nodes:', error);
         }
-        return relatedNodes;
+        return relatedNodes.slice(0, limit);
     }
 
     private async isDirectory(path: string): Promise<boolean> {

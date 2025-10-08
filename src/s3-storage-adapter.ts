@@ -3,6 +3,8 @@ import { BaseStorageAdapter } from "./base-storage-adapter";
 import { S3NodeOperations } from "./s3-node-operations";
 import { S3RelationshipOperations } from "./s3-relationship-operations";
 import { logger } from './logger';
+import { NodeNotFoundError, PermissionDeniedError, ConcurrentModificationError } from './errors';
+import { validateQueryLimit } from './validator';
 
 export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapter {
     private nodeOperations: S3NodeOperations;
@@ -41,13 +43,64 @@ export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapt
         return null;
     }
 
+    async updateNode(id: string, updates: Partial<Node>, auth: AuthContext): Promise<Node> {
+        this.validateNodeForUpdate(updates);
+
+        const node = await this.getNode(id, auth);
+        if (!node) {
+            throw new NodeNotFoundError(id);
+        }
+
+        if (!this.canAccessNode(node, auth)) {
+            throw new PermissionDeniedError(node.permissions, auth.userPermissions, `node ${id}`);
+        }
+
+        if (updates.version !== undefined && node.version !== updates.version) {
+            throw new ConcurrentModificationError(id, updates.version, node.version || 1);
+        }
+
+        const updatedNode: Node = {
+            ...node,
+            ...updates,
+            id: node.id,
+            type: node.type,
+            version: (node.version || 1) + 1
+        };
+
+        this.validateNode(updatedNode);
+
+        // Delete old node and create updated one
+        await this.nodeOperations.deleteNode(node);
+        const shardPath = this.getShardPathForType(updatedNode.type, updatedNode.id);
+        await this.nodeOperations.createNode(updatedNode, auth, shardPath);
+
+        this.cache.cacheNode(updatedNode);
+        return updatedNode;
+    }
+
+    async deleteNode(id: string, auth: AuthContext): Promise<void> {
+        const node = await this.getNode(id, auth);
+        if (!node) {
+            throw new NodeNotFoundError(id);
+        }
+
+        if (!this.canAccessNode(node, auth)) {
+            throw new PermissionDeniedError(node.permissions, auth.userPermissions, `node ${id}`);
+        }
+
+        await this.nodeOperations.deleteNode(node);
+    }
+
     async getNodeTypeFromId(id: string): Promise<string | null> {
         return this.nodeOperations.getNodeTypeFromId(id);
     }
 
-    async queryNodes(query: any, auth: AuthContext): Promise<Node[]> {
+    async queryNodes(query: any, auth: AuthContext, options?: { limit?: number; offset?: number }): Promise<Node[]> {
+        const limit = validateQueryLimit(options?.limit);
+        const offset = options?.offset || 0;
         const nodes = await this.nodeOperations.queryNodes(query);
-        return nodes.filter(node => this.canAccessNode(node, auth));
+        const filtered = nodes.filter(node => this.canAccessNode(node, auth));
+        return filtered.slice(offset, offset + limit);
     }
 
     async queryNodesAdvanced(options: QueryOptions, auth: AuthContext): Promise<QueryResult> {
@@ -174,16 +227,58 @@ export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapt
         return this.relationshipOperations.createRelationship(relationship, auth, shardPath);
     }
 
+    async updateRelationship(from: string, to: string, type: string, updates: Partial<Relationship>, auth: AuthContext): Promise<void> {
+        this.validateRelationshipForUpdate(updates);
+
+        // Get existing relationship by deleting and recreating with updates
+        // This is a limitation of the S3-based approach
+        const relationships = await this.relationshipOperations.listRelationshipsOfType(type);
+        const existing = relationships.find(r => r.from === from && r.to === to);
+
+        if (!existing) {
+            throw new NodeNotFoundError(`Relationship ${from}->${to} of type ${type}`);
+        }
+
+        const updatedRel: Relationship = {
+            ...existing,
+            ...updates,
+            from: existing.from,
+            to: existing.to,
+            type: existing.type,
+            version: (existing.version || 1) + 1
+        };
+
+        // Delete and recreate
+        await this.relationshipOperations.deleteRelationship(existing);
+        const shardPath = this.getShardPathForRelationship(type, from, to);
+        await this.relationshipOperations.createRelationship(updatedRel, auth, shardPath);
+        
+        this.cache.cacheRelationship(updatedRel);
+    }
+
+    async deleteRelationship(from: string, to: string, type: string, auth: AuthContext): Promise<void> {
+        const relationships = await this.relationshipOperations.listRelationshipsOfType(type);
+        const existing = relationships.find(r => r.from === from && r.to === to);
+
+        if (!existing) {
+            throw new NodeNotFoundError(`Relationship ${from}->${to} of type ${type}`);
+        }
+
+        await this.relationshipOperations.deleteRelationship(existing);
+    }
+
     async queryRelatedNodes(
         from: string,
         type: string,
         auth: AuthContext,
-        options?: { direction?: "IN" | "OUT"; skipCache?: boolean }
+        options?: { direction?: "IN" | "OUT"; skipCache?: boolean; limit?: number }
     ): Promise<Node[]> {
         if (!options?.skipCache) {
             return this.queryRelatedNodesWithCache(from, type, auth, options);
         }
-        return this.relationshipOperations.queryRelatedNodes(from, type, auth, options);
+        const limit = validateQueryLimit(options?.limit);
+        const nodes = await this.relationshipOperations.queryRelatedNodes(from, type, auth, options);
+        return nodes.slice(0, limit);
     }
 
     async cleanup(): Promise<void> {

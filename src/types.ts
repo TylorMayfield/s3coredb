@@ -42,6 +42,16 @@ interface StorageAdapter {
   getNode(id: string, auth: AuthContext): Promise<Node | null>;
 
   /**
+   * Update a node's properties
+   */
+  updateNode(id: string, updates: Partial<Node>, auth: AuthContext): Promise<Node>;
+
+  /**
+   * Delete a node by its ID
+   */
+  deleteNode(id: string, auth: AuthContext): Promise<void>;
+
+  /**
    * Get a node's type from its ID
    */
   getNodeTypeFromId(id: string): Promise<string | null>;
@@ -49,12 +59,22 @@ interface StorageAdapter {
   /**
    * Query nodes based on their properties
    */
-  queryNodes(query: any, auth: AuthContext): Promise<Node[]>;
+  queryNodes(query: any, auth: AuthContext, options?: { limit?: number; offset?: number }): Promise<Node[]>;
 
   /**
    * Create a relationship between two nodes
    */
   createRelationship(relationship: Relationship, auth: AuthContext): Promise<void>;
+
+  /**
+   * Update a relationship's properties
+   */
+  updateRelationship(from: string, to: string, type: string, updates: Partial<Relationship>, auth: AuthContext): Promise<void>;
+
+  /**
+   * Delete a relationship
+   */
+  deleteRelationship(from: string, to: string, type: string, auth: AuthContext): Promise<void>;
 
   /**
    * Query nodes related to a given node
@@ -79,6 +99,7 @@ interface StorageAdapter {
     options?: { 
       direction?: "IN" | "OUT";
       skipCache?: boolean;
+      limit?: number;
     }
   ): Promise<Node[]>;
 
