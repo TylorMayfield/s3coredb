@@ -133,10 +133,8 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         await this.initialized;
         logger.info(`Querying nodes with query: ${JSON.stringify(query)}`);
         const results = new Map<string, Node>();
-        const result: Node[] = [];
-        const nodeTypes = await this.getNodeTypes();
 
-        // Use type index if available
+        // Try cache first but don't return early - always check filesystem as source of truth
         if (query.type) {
             const cachedTypeNodes = this.cache.queryNodesByType(query.type);
             if (cachedTypeNodes.size > 0) {
@@ -146,58 +144,29 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
                         results.set(node.id, node);
                     }
                 }
-                return Array.from(results.values());
-            }
-        }
-
-        // Use compound index if available
-        if (query.type && query['properties.city'] && query['properties.age']) {
-            const nodes = this.cache.queryByCompoundIndex(
-                query.type,
-                ['city', 'age'],
-                [query['properties.city'], query['properties.age']]
-            );
-            if (nodes.size > 0) {
-                for (const nodeId of nodes) {
-                    const node = await this.getNode(nodeId, auth);
-                    if (node) result.push(node);
+                // If we found nodes in cache, return them (cache is populated from filesystem)
+                if (results.size > 0) {
+                    return Array.from(results.values());
                 }
-                return result;
             }
         }
 
-        // Use range index for age queries
-        if (query.type && query['properties.age']) {
-            const nodes = this.cache.queryByRange(
-                query.type,
-                'age',
-                query['properties.age'],
-                query['properties.age']
-            );
-            if (nodes.size > 0) {
-                for (const nodeId of nodes) {
-                    const node = await this.getNode(nodeId, auth);
-                    if (node) result.push(node);
-                }
-                return result;
-            }
-        }
-
-        // Fallback to filesystem search
-        const typeDirectories = await fs.readdir(this.nodesDir);
-        
-        // If query has a type, only search in that type's directory
-        const dirsToSearch = query.type 
-            ? [query.type].filter(type => typeDirectories.includes(type))
-            : typeDirectories;
-
-        for (const typeDir of dirsToSearch) {
-            const typePath = path.join(this.nodesDir, typeDir);
-            const files = await fs.readdir(typePath);
+        // Filesystem search (using glob for recursive search through shards)
+        try {
+            const typeDirectories = await fs.readdir(this.nodesDir);
             
-            for (const file of files) {
-                if (file.endsWith('.json')) {
-                    const data = await fs.readFile(path.join(typePath, file), 'utf8');
+            // If query has a type, only search in that type's directory
+            const dirsToSearch = query.type 
+                ? [query.type].filter(type => typeDirectories.includes(type))
+                : typeDirectories;
+
+            for (const typeDir of dirsToSearch) {
+                // Use glob to search recursively through shard directories
+                const pattern = path.join(this.nodesDir, typeDir, '**', '*.json');
+                const files = await glob(pattern);
+                
+                for (const file of files) {
+                    const data = await fs.readFile(file, 'utf8');
                     const node = JSON.parse(data) as Node;
                     if (this.matchesQuery(node, query) && this.canAccessNode(node, auth)) {
                         this.cache.cacheNode(node);
@@ -205,6 +174,8 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
                     }
                 }
             }
+        } catch (error) {
+            logger.error('Error querying nodes:', error);
         }
 
         return Array.from(results.values());
@@ -215,45 +186,27 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         logger.info(`Advanced query with options: ${JSON.stringify(options)}`);
         
         const { filter, sort, pagination } = options;
+        
+        // Convert filter to basic query or query all nodes if no filter
+        const basicQuery = this.convertFilterToQuery(filter);
+        
+        // If no type specified in filter, we need to query all nodes
         let nodes: Node[] = [];
-
-        // Use indexes for filtering if possible
-        if (filter?.filters) {
-            const typeFilter = filter.filters.find(f => f.field === 'type');
-            const ageFilter = filter.filters.find(f => f.field === 'properties.age');
-            const cityFilter = filter.filters.find(f => f.field === 'properties.city');
-            
-            if (typeFilter?.value && ageFilter?.value) {
-                // Try range index for age queries
-                if (ageFilter.operator === 'gt' || ageFilter.operator === 'gte' ||
-                    ageFilter.operator === 'lt' || ageFilter.operator === 'lte') {
-                    const min = ageFilter.operator === 'gt' || ageFilter.operator === 'gte' ? ageFilter.value : undefined;
-                    const max = ageFilter.operator === 'lt' || ageFilter.operator === 'lte' ? ageFilter.value : undefined;
-                    const nodeIds = this.cache.queryByRange(typeFilter.value, 'age', min, max);
-                    
-                    for (const nodeId of nodeIds) {
-                        const node = await this.getNode(nodeId, auth);
-                        if (node) nodes.push(node);
-                    }
-                }
-                // Try compound index for city + age queries
-                else if (cityFilter?.value) {
-                    const nodeIds = this.cache.queryByCompoundIndex(
-                        typeFilter.value,
-                        ['city', 'age'],
-                        [cityFilter.value, ageFilter.value]
-                    );
-                    for (const nodeId of nodeIds) {
-                        const node = await this.getNode(nodeId, auth);
-                        if (node) nodes.push(node);
-                    }
-                }
+        if (Object.keys(basicQuery).length === 0) {
+            // Query all nodes from all types
+            const types = await this.getNodeTypes();
+            for (const type of types) {
+                const typeNodes = await this.queryNodes({ type }, auth);
+                nodes.push(...typeNodes);
             }
+        } else {
+            // Query with the basic query
+            nodes = await this.queryNodes(basicQuery, auth);
         }
-
-        // Fallback to basic query if no index matches
-        if (nodes.length === 0) {
-            nodes = await this.queryNodes(this.convertFilterToQuery(filter), auth);
+        
+        // Apply additional filter conditions if specified
+        if (filter?.field || filter?.filters) {
+            nodes = nodes.filter(node => this.matchesFilterCondition(node, filter));
         }
 
         // Apply sorting
@@ -416,6 +369,9 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
             await fs.rm(this.nodesDir, { recursive: true, force: true });
             await fs.rm(this.relationshipsDir, { recursive: true, force: true });
             
+            // Clear the cache
+            this.clearCache();
+            
             // Recreate the directories
             await this.initializeDirectories();
             logger.info('Cleaned up all data files');
@@ -429,6 +385,13 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         if (!filter) return {};
         
         const query: any = {};
+        
+        // Handle direct field filter
+        if (filter.field && filter.operator === 'eq') {
+            query[filter.field] = filter.value;
+        }
+        
+        // Handle nested filters
         if (filter.filters) {
             for (const f of filter.filters) {
                 if (f.field && f.operator === 'eq') {
@@ -436,6 +399,7 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
                 }
             }
         }
+        
         return query;
     }
 
