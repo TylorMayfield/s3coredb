@@ -104,7 +104,8 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
             const nodeTypes = await fs.readdir(this.nodesDir);
             
             for (const type of nodeTypes) {
-                const pattern = path.join(this.nodesDir, type, '**', `${id}.json`);
+                // Convert to forward slashes for glob (works on all platforms)
+                const pattern = path.join(this.nodesDir, type, '**', `${id}.json`).replace(/\\/g, '/');
                 const matches = await glob(pattern);
                 
                 if (matches.length > 0) {
@@ -162,7 +163,8 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
 
             for (const typeDir of dirsToSearch) {
                 // Use glob to search recursively through shard directories
-                const pattern = path.join(this.nodesDir, typeDir, '**', '*.json');
+                // Convert to forward slashes for glob (works on all platforms)
+                const pattern = path.join(this.nodesDir, typeDir, '**', '*.json').replace(/\\/g, '/');
                 const files = await glob(pattern);
                 
                 for (const file of files) {
@@ -332,7 +334,8 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
 
         const relatedNodes: Node[] = [];
         try {
-            const pattern = path.join(this.relationshipsDir, type, '**', '*.json');
+            // Use forward slashes for glob pattern (works on all platforms)
+            const pattern = path.join(this.relationshipsDir, type, '**', '*.json').replace(/\\/g, '/');
             const files = await glob(pattern);
             
             for (const file of files) {

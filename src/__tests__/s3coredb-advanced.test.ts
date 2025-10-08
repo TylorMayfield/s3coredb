@@ -125,8 +125,9 @@ describe('S3CoreDB Advanced Tests', () => {
             };
 
             // Limited user cannot create relationship to secret node
+            // Note: For security, this returns "not exist" instead of revealing the node exists but is inaccessible
             await expect(db.createRelationship(relationship, authContext))
-                .rejects.toThrow('Permission denied');
+                .rejects.toThrow('One or both nodes in the relationship do not exist');
         });
     });
 

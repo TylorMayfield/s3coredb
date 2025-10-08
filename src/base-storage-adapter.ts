@@ -249,29 +249,15 @@ export abstract class BaseStorageAdapter implements StorageAdapter {
     }
 
     protected matchesQuery(node: Node, query: any): boolean {
-        // First check cache indexes for fast filtering
-        if (query.type && !this.cache.queryNodesByType(query.type).has(node.id)) {
-            return false;
-        }
-
-        // Check property indexes
-        for (const [key, value] of Object.entries(query)) {
-            if (key === 'type') continue;
-            if (key.startsWith('properties.')) {
-                const propertyName = key.substring('properties.'.length);
-                if (!this.cache.queryNodesByProperty(node.type, propertyName, value).has(node.id)) {
-                    return false;
-                }
-            }
-        }
-
-        // Fallback to full property matching for complex queries
+        // Always do full property matching to ensure accuracy
+        // (Cache indexes are optimization hints, not required)
         for (const [key, value] of Object.entries(query)) {
             if (key === 'type') {
                 if (node.type !== value) return false;
             } else if (key.startsWith('properties.')) {
                 const propertyValue = this.getNestedValue(node, key);
                 if (Array.isArray(value)) {
+                    // For array queries, check if all query values are in the node's property array
                     if (!Array.isArray(propertyValue) || !value.every(v => propertyValue.includes(v))) {
                         return false;
                     }

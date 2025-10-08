@@ -221,24 +221,30 @@ describe('Integration Tests', () => {
         });
 
         it('should handle multi-level permission hierarchy', async () => {
+            // Use admin auth to create nodes with different permission levels
+            const adminAuth: AuthContext = {
+                userPermissions: [],
+                isAdmin: true
+            };
+
             // Create nodes with different permission levels
             const publicNode = await db.createNode({
                 type: 'document',
                 properties: { title: 'Public Document', level: 'public' },
                 permissions: ['read']
-            });
+            }, adminAuth);
 
             const internalNode = await db.createNode({
                 type: 'document',
                 properties: { title: 'Internal Document', level: 'internal' },
                 permissions: ['internal']
-            });
+            }, adminAuth);
 
             const secretNode = await db.createNode({
                 type: 'document',
                 properties: { title: 'Secret Document', level: 'secret' },
                 permissions: ['secret']
-            });
+            }, adminAuth);
 
             // Public user
             const publicAuth: AuthContext = {

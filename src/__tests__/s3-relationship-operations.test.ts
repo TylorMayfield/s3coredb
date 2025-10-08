@@ -70,14 +70,24 @@ describe('S3RelationshipOperations', () => {
             };
 
             // Mock ListObjectsV2Command for type listing
-            s3Mock.on(ListObjectsV2Command).resolves({
-                CommonPrefixes: [
-                    { Prefix: 'nodes/user/' }
-                ],
-                Contents: [
-                    { Key: 'nodes/user/user-1.json' },
-                    { Key: 'nodes/user/user-2.json' }
-                ]
+            s3Mock.on(ListObjectsV2Command).callsFake((params: any) => {
+                const prefix = (params as any).Prefix;
+                if (prefix === 'nodes/') {
+                    return {
+                        CommonPrefixes: [
+                            { Prefix: 'nodes/user/' }
+                        ]
+                    };
+                } else if (prefix?.includes('non-existent')) {
+                    return { Contents: [] };
+                } else {
+                    return {
+                        Contents: [
+                            { Key: 'nodes/user/user-1.json' },
+                            { Key: 'nodes/user/user-2.json' }
+                        ]
+                    };
+                }
             });
 
             s3Mock.on(GetObjectCommand).callsFake((params: any) => {
@@ -121,8 +131,8 @@ describe('S3RelationshipOperations', () => {
                 permissions: ['read']
             };
 
-            s3Mock.on(GetObjectCommand).rejects({ name: 'NoSuchKey' });
-
+            // This test relies on the beforeEach setup where non-existent nodes throw NoSuchKey
+            // The beforeEach mock will throw for any key that doesn't match user-1 or user-2
             await expect(relOps.createRelationship(relationship, authContext, 'FOLLOWS/001/002'))
                 .rejects.toThrow();
         });
@@ -189,15 +199,25 @@ describe('S3RelationshipOperations', () => {
 
         beforeEach(() => {
             // Mock ListObjectsV2Command for type listing
-            s3Mock.on(ListObjectsV2Command).resolves({
-                CommonPrefixes: [
-                    { Prefix: 'nodes/user/' }
-                ],
-                Contents: [
-                    { Key: 'nodes/user/user-1.json' },
-                    { Key: 'nodes/user/user-2.json' },
-                    { Key: 'nodes/user/user-3.json' }
-                ]
+            s3Mock.on(ListObjectsV2Command).callsFake((params: any) => {
+                const prefix = (params as any).Prefix;
+                if (prefix === 'nodes/') {
+                    return {
+                        CommonPrefixes: [
+                            { Prefix: 'nodes/user/' }
+                        ]
+                    };
+                } else if (prefix?.startsWith('relationships/FOLLOWS')) {
+                    return { Contents: [] }; // Default to no relationships
+                } else {
+                    return {
+                        Contents: [
+                            { Key: 'nodes/user/user-1.json' },
+                            { Key: 'nodes/user/user-2.json' },
+                            { Key: 'nodes/user/user-3.json' }
+                        ]
+                    };
+                }
             });
 
             s3Mock.on(GetObjectCommand).callsFake((params: any) => {
@@ -301,8 +321,7 @@ describe('S3RelationshipOperations', () => {
         });
 
         it('should return empty array when source node not found', async () => {
-            s3Mock.on(GetObjectCommand).rejects({ name: 'NoSuchKey' });
-
+            // The beforeEach mock will throw for any key that doesn't match user-1, user-2, or user-3
             const relatedNodes = await relOps.queryRelatedNodes(
                 'non-existent',
                 'FOLLOWS',
