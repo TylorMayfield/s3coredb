@@ -12,9 +12,31 @@
     "poc": "ts-node examples/social-network-poc.ts",
     "benchmark": "ts-node examples/benchmark-poc.ts"
   },
-  "author": "",
+  "author": "Tylor Mayfield",
   "license": "ISC",
-  "description": "",
+  "description": "A powerful node-based graph database using S3-compatible storage for scalable data modeling",
+  "keywords": [
+    "database",
+    "graph-database",
+    "s3",
+    "nosql",
+    "typescript",
+    "graph",
+    "nodes",
+    "relationships",
+    "storage",
+    "aws",
+    "minio",
+    "localstack"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TylorMayfield/s3coredb.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TylorMayfield/s3coredb/issues"
+  },
+  "homepage": "https://github.com/TylorMayfield/s3coredb#readme",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.750.0",
     "@types/glob": "^8.1.0",

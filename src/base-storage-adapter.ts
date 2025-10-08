@@ -296,8 +296,8 @@ export abstract class BaseStorageAdapter implements StorageAdapter {
             (direction === "IN" && relationship.to === from);
     }
 
-    protected validateNode(node: Node): void {
-        Validator.validateNode(node);
+    protected validateNode(node: Node, isCreation: boolean = true): void {
+        Validator.validateNode(node, isCreation);
         // Add node to cache after validation
         this.cache.cacheNode(node);
     }

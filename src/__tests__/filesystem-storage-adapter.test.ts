@@ -79,7 +79,7 @@ describe('FileSystemStorageAdapter', () => {
             };
 
             await expect(adapter.createNode(invalidNode as Node, authContext))
-                .rejects.toThrow('Type must be a non-empty string');
+                .rejects.toThrow('Type is required');
         });
 
         it('should validate node permissions', async () => {
@@ -91,7 +91,7 @@ describe('FileSystemStorageAdapter', () => {
             };
 
             await expect(adapter.createNode(invalidNode as Node, authContext))
-                .rejects.toThrow('Permissions must be an array');
+                .rejects.toThrow('Permissions are required');
         });
 
         it('should validate node properties', async () => {
