@@ -2,6 +2,16 @@ name: Database Benchmark
 
 on:
   workflow_dispatch:  # Allow manual trigger
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'examples/benchmark-poc.ts'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'examples/benchmark-poc.ts'
 
 jobs:
   benchmark:
@@ -23,5 +33,45 @@ jobs:
       run: npm run build
       
     - name: Run benchmark
-      run: npx ts-node examples/benchmark-poc.ts
+      run: |
+        echo "Running benchmark..."
+        npx ts-node examples/benchmark-poc.ts | tee benchmark-results.txt
       
+    - name: Store benchmark results
+      if: success()
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results
+        path: |
+          benchmark-results.txt
+          benchmark-data/
+        retention-days: 90
+
+    - name: Compare with previous benchmark
+      if: github.event_name == 'pull_request'
+      run: |
+        echo "Comparing with main branch benchmark..."
+        git checkout main
+        npm ci
+        npm run build
+        npx ts-node examples/benchmark-poc.ts | tee main-benchmark.txt
+        echo "Performance change:"
+        diff benchmark-results.txt main-benchmark.txt || true
+
+    - name: Add benchmark results to PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const results = fs.readFileSync('benchmark-results.txt', 'utf8');
+          const mainResults = fs.readFileSync('main-benchmark.txt', 'utf8');
+          
+          const body = `## Benchmark Results\n\`\`\`\n${results}\n\`\`\`\n\n### Comparison with main branch\n\`\`\`diff\n${mainResults}\n\`\`\``;
+          
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: body
+          });
