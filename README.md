@@ -377,12 +377,14 @@ const aliceFollowers = await db.queryRelatedNodes(
 
 Check out our [examples directory](examples/) for full implementations:
 
-- 📱 **[Social Network POC](examples/social-network-poc.ts)** - Complete social network with users, posts, and relationships
+- 🎯 **[CRUD Operations](examples/crud-example.ts)** - Complete guide to Create, Read, Update, Delete with error handling
+- 📱 **[Social Network POC](examples/social-network-poc.ts)** - Full social network with users, posts, and relationships
 - 🐕 **[Dog Training Tracker](examples/dog-training-poc.ts)** - Track dog training progress and relationships
 - ⚡ **[Benchmark Suite](examples/benchmark-poc.ts)** - Performance testing and optimization
 
 Run examples:
 ```bash
+npm run crud          # CRUD operations example
 npm run poc           # Social network example
 npm run benchmark     # Performance benchmarks
 ```

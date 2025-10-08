@@ -10,6 +10,7 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "poc": "ts-node examples/social-network-poc.ts",
+    "crud": "ts-node examples/crud-example.ts",
     "benchmark": "ts-node examples/benchmark-poc.ts"
   },
   "author": "Tylor Mayfield",
