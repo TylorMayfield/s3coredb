@@ -129,6 +129,14 @@ export class CacheManager {
         return cached.node;
     }
 
+    removeNode(id: string): void {
+        const cached = this.nodeCache.get(id);
+        if (cached) {
+            this.nodeCache.delete(id);
+            this.removeNodeFromIndexes(cached.node);
+        }
+    }
+
     cacheRelationship(relationship: Relationship): void {
         this.queueOrExecute(() => {
             if (this.relationshipCache.size >= this.maxSize) {

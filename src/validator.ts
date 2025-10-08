@@ -115,16 +115,29 @@ export class Validator {
         }
     }
 
-    static validateNode(node: Partial<Node>): void {
+    static validateNode(node: Partial<Node>, isCreation: boolean = false): void {
+        // For creation, require all fields
+        if (isCreation) {
+            if (!node.type) {
+                throw new ValidationError('type', 'Type is required');
+            }
+            if (!node.properties) {
+                throw new ValidationError('properties', 'Properties must be a non-null object');
+            }
+            if (!node.permissions) {
+                throw new ValidationError('permissions', 'Permissions are required');
+            }
+        }
+
         if (node.type) {
             this.validateNodeType(node.type);
         }
 
-        if (node.properties) {
+        if (node.properties !== undefined) {
             this.validateProperties(node.properties);
         }
 
-        if (node.permissions) {
+        if (node.permissions !== undefined) {
             this.validatePermissions(node.permissions);
         }
 

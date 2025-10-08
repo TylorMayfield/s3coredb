@@ -89,6 +89,9 @@ export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapt
         }
 
         await this.nodeOperations.deleteNode(node);
+        
+        // Clear from cache
+        this.cache.removeNode(id);
     }
 
     async getNodeTypeFromId(id: string): Promise<string | null> {

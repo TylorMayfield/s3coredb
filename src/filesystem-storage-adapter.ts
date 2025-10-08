@@ -146,7 +146,8 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         const filePath = this.getNodePath(node);
         await fs.unlink(filePath);
         
-        // Cache will expire naturally
+        // Clear from cache
+        this.cache.removeNode(id);
     }
 
     async getNode(id: string, auth: AuthContext): Promise<Node | null> {

@@ -33,7 +33,7 @@ class S3CoreDB {
     const authContext = this.getAuthContext(auth);
     
     // Validate input
-    Validator.validateNode({ type: data.type, properties: data.properties, permissions: data.permissions } as Node);
+    Validator.validateNode({ type: data.type, properties: data.properties, permissions: data.permissions } as Node, true);
     
     // Only users with admin access or at least one matching permission can create nodes
     if (!this.canCreateWithPermissions(data.permissions, authContext)) {

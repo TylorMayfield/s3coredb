@@ -101,7 +101,7 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         }
 
         // Clear from cache
-        // Note: We don't have a removeNode method in cache, so it will expire naturally
+        this.cache.removeNode(id);
     }
 
     async getNodeTypeFromId(id: string): Promise<string | null> {
