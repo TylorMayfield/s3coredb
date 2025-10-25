@@ -39,7 +39,7 @@
   },
   "homepage": "https://github.com/TylorMayfield/s3coredb#readme",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.750.0",
+    "@aws-sdk/client-s3": "^3.917.0",
     "@types/glob": "^8.1.0",
     "glob": "^11.0.1",
     "ts-node": "^10.9.2",
