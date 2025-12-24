@@ -6,13 +6,16 @@ import {
   DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
 import { Node, S3CoreDBConfig, AuthContext, QueryFilter, Aggregation, QueryOptions, QueryResult } from "./types";
+import { ShardManager } from "./shard-manager";
 import { logger } from './logger';
 
 export class S3NodeOperations {
   private s3: S3Client;
   private bucket: string;
+  private shardManager?: ShardManager;
 
-  constructor(config: S3CoreDBConfig) {
+  constructor(config: S3CoreDBConfig, shardManager?: ShardManager) {
+    this.shardManager = shardManager;
     const s3Config = {
       credentials: {
         accessKeyId: config.accessKeyId,
@@ -50,48 +53,59 @@ export class S3NodeOperations {
 
   async getNode(id: string, auth: AuthContext, type?: string): Promise<Node | null> {
     try {
-      let key: string;
       if (type) {
-        key = `nodes/${type}/${id}.json`;
-        const getObjectCommand = new GetObjectCommand({
-          Bucket: this.bucket,
-          Key: key,
-        });
+        const shardPath = this.shardManager ? this.shardManager.getShardPath(id) : '';
+        const key = `nodes/${type}/${shardPath ? shardPath + '/' : ''}${id}.json`;
         
-        const response = await this.s3.send(getObjectCommand);
-        const data = await response.Body?.transformToString();
-        if (!data) return null;
-        
-        return JSON.parse(data) as Node;
-      } else {
-        // List all type folders
-        const listCommand = new ListObjectsV2Command({
-          Bucket: this.bucket,
-          Prefix: "nodes/",
-          Delimiter: "/",
-        });
-        const response = await this.s3.send(listCommand);
-        
-        // Search in each type folder recursively
-        for (const prefix of response.CommonPrefixes || []) {
-          const searchCommand = new ListObjectsV2Command({
+        try {
+          const getObjectCommand = new GetObjectCommand({
             Bucket: this.bucket,
-            Prefix: prefix.Prefix + "**/" + id + ".json",
+            Key: key,
           });
-          const searchResponse = await this.s3.send(searchCommand);
           
-          if (searchResponse.Contents && searchResponse.Contents.length > 0) {
-            const getCommand = new GetObjectCommand({
-              Bucket: this.bucket,
-              Key: searchResponse.Contents[0].Key,
-            });
-            const nodeResponse = await this.s3.send(getCommand);
-            const data = await nodeResponse.Body?.transformToString();
-            if (data) {
-              return JSON.parse(data) as Node;
-            }
+          const response = await this.s3.send(getObjectCommand);
+          const data = await response.Body?.transformToString();
+          if (!data) return null;
+
+          return JSON.parse(data) as Node;
+        } catch (e: any) {
+          // If accessing with ShardManager fails (or returns NoSuchKey), and we didn't use ShardManager, fallback?
+          // Actually, if ShardManager IS used, we expect the path to be correct.
+          // If ShardManager is NOT used, shardPath is empty, so it checks nodes/type/id.json.
+          if (e.name !== 'NoSuchKey') {
+            throw e;
           }
+          return null;
         }
+      } else {
+        // If type is not known, we must check all types.
+        // Instead of listing objects (slow and broken for wildcards), we iterate types and check existence.
+        const types = await this.listNodeTypes();
+        const shardPath = this.shardManager ? this.shardManager.getShardPath(id) : '';
+
+        // We can parallelize the checks
+        const checkPromises = types.map(async (t) => {
+            const key = `nodes/${t}/${shardPath ? shardPath + '/' : ''}${id}.json`;
+            try {
+                const getObjectCommand = new GetObjectCommand({
+                    Bucket: this.bucket,
+                    Key: key,
+                });
+                const response = await this.s3.send(getObjectCommand);
+                const data = await response.Body?.transformToString();
+                if (data) {
+                    return JSON.parse(data) as Node;
+                }
+            } catch (e: any) {
+                if (e.name !== 'NoSuchKey') {
+                    logger.warn(`Error checking node ${id} in type ${t}: ${e.message}`);
+                }
+            }
+            return null;
+        });
+
+        const results = await Promise.all(checkPromises);
+        return results.find(n => n !== null) || null;
       }
     } catch (error) {
       logger.error('Error getting node:', error);
