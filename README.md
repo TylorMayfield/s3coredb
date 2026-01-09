@@ -11,13 +11,15 @@
 
 *Build scalable graph-like data structures with S3 as your backend*
 
-[Features](#-features) • [Installation](#-installation) • [Quick Start](#-quick-start) • [API](#-api-reference) • [Examples](#-examples)
+[Features](#-features) • [Roadmap](PRODUCT.md) • [Installation](#-installation) • [Quick Start](#-quick-start) • [API](#-api-reference) • [Examples](#-examples)
 
 </div>
 
 ---
 
 ## 🌟 Features
+
+> 🗺️ **See [PRODUCT.md](PRODUCT.md) for the full Roadmap and Functional Specs.**
 
 ### Core Capabilities
 - **🏗️ Graph Database Architecture** - Nodes and relationships for complex data modeling
