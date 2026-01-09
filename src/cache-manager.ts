@@ -137,8 +137,8 @@ export class CacheManager {
         }
     }
 
-    removeRelationship(from: string, to: string, type: string): void {
-        const relId = this.getRelationshipId({ from, to, type } as Relationship);
+    removeRelationship(relationship: Relationship): void {
+        const relId = this.getRelationshipId(relationship);
         const cached = this.relationshipCache.get(relId);
 
         if (cached) {
@@ -146,8 +146,16 @@ export class CacheManager {
             this.removeRelationshipFromIndexes(cached.relationship);
 
             // Remove from adjacency lists
-            this.adjacencyLists.get(from)?.get(type)?.delete(to);
-            this.reverseAdjacencyLists.get(to)?.get(type)?.delete(from);
+            if (this.adjacencyLists.has(relationship.from)) {
+                this.adjacencyLists.get(relationship.from)?.get(relationship.type)?.delete(relationship.to);
+            }
+            if (this.reverseAdjacencyLists.has(relationship.to)) {
+                this.reverseAdjacencyLists.get(relationship.to)?.get(relationship.type)?.delete(relationship.from);
+            }
+
+            // Invalidate traversal cache
+            // We clear all traversal cache for simplicity as granular invalidation is complex
+            this.traversalCache.clear();
 
             logger.debug('Removed relationship from cache', { id: relId });
         }

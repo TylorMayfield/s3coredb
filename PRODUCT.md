@@ -10,6 +10,7 @@ S3CoreDB currently provides a production-ready (Score: 8/10) graph database engi
 *   **Nodes & Relationships:** Full graph data modeling support.
 *   **CRUD Operations:** Create, Read, Update, and Delete for both Nodes and Relationships.
 *   **Storage Agnostic:** Adapters for AWS S3, Local FileSystem, and In-Memory storage.
+*   **Type Safety:** TypeScript-first design with comprehensive type definitions.
 
 ### Data Integrity & Safety
 *   **Input Validation:** Comprehensive validation for types, property sizes (max 1MB), and structure.
@@ -67,3 +68,4 @@ Ideas for the long-term vision, currently on hold or requiring further discovery
 *   **Transactions:** No atomic multi-operation transactions. If a batch operation fails halfway, manual rollback is required.
 *   **Performance:** Queries on properties without ID lookups involve scanning the shard/bucket, which is slower than indexed databases.
 *   **Scale:** Optimized for "serverless" scale (millions of nodes), but not for high-frequency trading latency (sub-millisecond). S3 latency applies (typically 20-100ms).
+*   **Limits:** Default query limit is 1,000 items; Max property value size is 1MB.

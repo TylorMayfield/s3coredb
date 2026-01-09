@@ -20,6 +20,8 @@
 
 ## 🌟 Features
 
+> 🗺️ **See [PRODUCT.md](PRODUCT.md) for the full Roadmap and Functional Specs.**
+
 ### Core Capabilities
 - **🏗️ Graph Database Architecture** - Nodes and relationships for complex data modeling
 - **🔐 Built-in Permission System** - Fine-grained access control at node and relationship level

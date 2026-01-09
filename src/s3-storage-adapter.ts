@@ -14,8 +14,8 @@ export class S3StorageAdapter extends BaseStorageAdapter implements StorageAdapt
     constructor(config: S3CoreDBConfig, numShards: number = 256, shardLevels: number = 2) {
         super(undefined, numShards, shardLevels);
         this.config = config;
-        this.nodeOperations = new S3NodeOperations(config);
-        this.relationshipOperations = new S3RelationshipOperations(config);
+        this.nodeOperations = new S3NodeOperations(config, this.shardManager);
+        this.relationshipOperations = new S3RelationshipOperations(config, this.shardManager);
         logger.info('S3StorageAdapter initialized', { 
             endpoint: config.endpoint, 
             bucket: config.bucket 

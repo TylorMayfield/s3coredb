@@ -274,7 +274,7 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         }
 
         typeMap.delete(key);
-        this.cache.removeRelationship(from, to, type);
+        this.cache.removeRelationship({ from, to, type } as Relationship);
     }
 
     async queryRelatedNodes(
@@ -319,6 +319,13 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         if (!filter) return {};
         
         const query: any = {};
+
+        // Handle direct field filter
+        if (filter.field && filter.operator === 'eq') {
+            query[filter.field] = filter.value;
+        }
+
+        // Handle nested filters
         if (filter.filters) {
             for (const f of filter.filters) {
                 if (f.field && f.operator === 'eq') {

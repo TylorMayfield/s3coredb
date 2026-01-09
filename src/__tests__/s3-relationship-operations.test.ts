@@ -259,27 +259,47 @@ describe('S3RelationshipOperations', () => {
                 permissions: ['read']
             };
 
-            s3Mock.on(ListObjectsV2Command).resolves({
-                Contents: [
-                    { Key: 'relationships/FOLLOWS/001/user-1__user-2.json' },
-                    { Key: 'relationships/FOLLOWS/002/user-1__user-3.json' }
-                ]
+            s3Mock.on(ListObjectsV2Command).callsFake((params: any) => {
+                const prefix = (params as any).Prefix;
+                if (prefix?.startsWith('relationships/FOLLOWS')) {
+                    return {
+                        Contents: [
+                            { Key: 'relationships/FOLLOWS/001/user-1__user-2.json' },
+                            { Key: 'relationships/FOLLOWS/002/user-1__user-3.json' }
+                        ]
+                    };
+                }
+                // Fallback to default behavior for nodes
+                if (prefix === 'nodes/') {
+                    return { CommonPrefixes: [{ Prefix: 'nodes/user/' }] };
+                }
+                if (prefix === 'nodes/user/') {
+                    return {
+                        Contents: [
+                            { Key: 'nodes/user/user-1.json' },
+                            { Key: 'nodes/user/user-2.json' },
+                            { Key: 'nodes/user/user-3.json' }
+                        ]
+                    };
+                }
+                return { Contents: [] };
             });
 
-            const relMock = s3Mock.on(GetObjectCommand, { 
-                Key: 'relationships/FOLLOWS/001/user-1__user-2.json' 
-            }).resolvesOnce({
-                Body: {
-                    transformToString: async () => JSON.stringify(rel1)
-                } as any
-            });
+            // Override GetObject to handle both nodes (from beforeEach logic) and new relationships
+            s3Mock.on(GetObjectCommand).callsFake(async (input: any) => {
+                const key = input.Key;
+                if (key === 'relationships/FOLLOWS/001/user-1__user-2.json') {
+                    return { Body: { transformToString: async () => JSON.stringify(rel1) } };
+                }
+                if (key === 'relationships/FOLLOWS/002/user-1__user-3.json') {
+                    return { Body: { transformToString: async () => JSON.stringify(rel2) } };
+                }
+                // Node logic (copied from beforeEach)
+                if (key?.includes('user-1.json')) return { Body: { transformToString: async () => JSON.stringify(sourceNode) } };
+                if (key?.includes('user-2.json')) return { Body: { transformToString: async () => JSON.stringify(targetNode1) } };
+                if (key?.includes('user-3.json')) return { Body: { transformToString: async () => JSON.stringify(targetNode2) } };
 
-            s3Mock.on(GetObjectCommand, { 
-                Key: 'relationships/FOLLOWS/002/user-1__user-3.json' 
-            }).resolvesOnce({
-                Body: {
-                    transformToString: async () => JSON.stringify(rel2)
-                } as any
+                throw { name: 'NoSuchKey' };
             });
 
             const relatedNodes = await relOps.queryRelatedNodes(
@@ -393,7 +413,21 @@ describe('S3RelationshipOperations', () => {
         });
 
         it('should handle S3 errors gracefully', async () => {
-            s3Mock.on(ListObjectsV2Command).rejects(new Error('S3 Error'));
+            // Override ListObjects to fail ONLY for relationships
+            s3Mock.on(ListObjectsV2Command).callsFake((params: any) => {
+                const prefix = (params as any).Prefix;
+                if (prefix?.startsWith('relationships/')) {
+                    throw new Error('S3 Error');
+                }
+                // Allow node listing to work (so getNode succeeds)
+                if (prefix === 'nodes/') {
+                    return { CommonPrefixes: [{ Prefix: 'nodes/user/' }] };
+                }
+                if (prefix === 'nodes/user/') {
+                    return { Contents: [{ Key: 'nodes/user/user-1.json' }] };
+                }
+                return { Contents: [] };
+            });
 
             await expect(relOps.queryRelatedNodes(
                 'user-1',

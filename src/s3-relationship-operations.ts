@@ -7,6 +7,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { Relationship, Node, S3CoreDBConfig, AuthContext } from "./types";
 import { S3NodeOperations } from "./s3-node-operations";
+import { ShardManager } from "./shard-manager";
 import { logger } from './logger';
 
 export class S3RelationshipOperations {
@@ -14,7 +15,7 @@ export class S3RelationshipOperations {
   private bucket: string;
   private nodeOperations: S3NodeOperations;
 
-  constructor(config: S3CoreDBConfig) {
+  constructor(config: S3CoreDBConfig, shardManager?: ShardManager) {
     const s3Config = {
       credentials: {
         accessKeyId: config.accessKeyId,
@@ -26,7 +27,7 @@ export class S3RelationshipOperations {
     };
     this.s3 = new S3Client(s3Config);
     this.bucket = config.bucket;
-    this.nodeOperations = new S3NodeOperations(config);
+    this.nodeOperations = new S3NodeOperations(config, shardManager);
   }
 
   getRelationshipKey(relationship: Relationship, shardPath: string): string {

@@ -200,7 +200,7 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         const offset = options?.offset || 0;
         const results = new Map<string, Node>();
 
-        // Try cache first but don't return early - always check filesystem as source of truth
+        // Try cache first
         if (query.type) {
             const cachedTypeNodes = this.cache.queryNodesByType(query.type);
             if (cachedTypeNodes.size > 0) {
@@ -209,10 +209,6 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
                     if (node && this.matchesQuery(node, query)) {
                         results.set(node.id, node);
                     }
-                }
-                // If we found nodes in cache, return them (cache is populated from filesystem)
-                if (results.size > 0) {
-                    return Array.from(results.values());
                 }
             }
         }
@@ -442,7 +438,7 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         
         try {
             await fs.unlink(filePath);
-            this.cache.removeRelationship(from, to, type);
+            this.cache.removeRelationship(relationship);
         } catch (error) {
             throw new RelationshipNotFoundError(from, to, type);
         }
