@@ -1,5 +1,6 @@
 import { S3NodeOperations } from '../s3-node-operations';
 import { Node, AuthContext, S3CoreDBConfig } from '../types';
+import { ShardManager } from '../shard-manager';
 import { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { mockClient } from 'aws-sdk-client-mock';
 
@@ -7,6 +8,7 @@ const s3Mock = mockClient(S3Client);
 
 describe('S3NodeOperations', () => {
     let nodeOps: S3NodeOperations;
+    let shardManager: ShardManager;
     const config: S3CoreDBConfig = {
         endpoint: 'http://localhost:4566',
         accessKeyId: 'test',
@@ -21,7 +23,8 @@ describe('S3NodeOperations', () => {
 
     beforeEach(() => {
         s3Mock.reset();
-        nodeOps = new S3NodeOperations(config);
+        shardManager = new ShardManager(256, 2);
+        nodeOps = new S3NodeOperations(config, shardManager);
     });
 
     describe('Node Key Generation', () => {
@@ -148,23 +151,52 @@ describe('S3NodeOperations', () => {
                 properties: { name: 'Dave' },
                 permissions: ['read']
             };
+            const shardPath = shardManager.getShardPath(node.id);
+            const key = `nodes/user/${shardPath}/${node.id}.json`;
 
-            s3Mock.on(ListObjectsV2Command).resolves({
+            // List types
+            s3Mock.on(ListObjectsV2Command, { Prefix: 'nodes/', Delimiter: '/' }).resolves({
                 CommonPrefixes: [
                     { Prefix: 'nodes/user/' },
                     { Prefix: 'nodes/post/' }
                 ]
             });
 
-            s3Mock.on(GetObjectCommand).resolves({
+            // Mock GetObject for the correct path
+            s3Mock.on(GetObjectCommand, { Key: key }).resolves({
                 Body: {
                     transformToString: async () => JSON.stringify(node)
                 } as any
             });
 
+            // Mock fail for post
+            const postShardPath = shardManager.getShardPath(node.id); // Same ID same shard path
+            const postKey = `nodes/post/${postShardPath}/${node.id}.json`;
+            s3Mock.on(GetObjectCommand, { Key: postKey }).rejects({ name: 'NoSuchKey' });
+
             const result = await nodeOps.getNode('search-test', authContext);
 
-            expect(result).toBeNull(); // Returns null because ListObjectsV2 doesn't find the specific pattern
+            expect(result).toEqual(node);
+        });
+
+        it('should retrieve node correctly when sharding is enabled and type is provided', async () => {
+             const node: Node = {
+                id: 'sharding-test',
+                type: 'user',
+                properties: { name: 'Eve' },
+                permissions: ['read']
+            };
+            const shardPath = shardManager.getShardPath(node.id);
+            const key = `nodes/user/${shardPath}/${node.id}.json`;
+
+            s3Mock.on(GetObjectCommand, { Key: key }).resolves({
+                Body: {
+                    transformToString: async () => JSON.stringify(node)
+                } as any
+            });
+
+            const result = await nodeOps.getNode('sharding-test', authContext, 'user');
+            expect(result).toEqual(node);
         });
 
         it('should handle empty response body', async () => {
