@@ -137,6 +137,27 @@ export class CacheManager {
         }
     }
 
+    removeRelationship(relationship: Relationship): void {
+        const relId = this.getRelationshipId(relationship);
+        const cached = this.relationshipCache.get(relId);
+        if (cached) {
+            this.relationshipCache.delete(relId);
+            this.removeRelationshipFromIndexes(cached.relationship);
+
+            // Remove from adjacency lists
+            if (this.adjacencyLists.has(relationship.from)) {
+                this.adjacencyLists.get(relationship.from)?.get(relationship.type)?.delete(relationship.to);
+            }
+            if (this.reverseAdjacencyLists.has(relationship.to)) {
+                this.reverseAdjacencyLists.get(relationship.to)?.get(relationship.type)?.delete(relationship.from);
+            }
+
+            // Invalidate traversal cache
+            // We clear all traversal cache for simplicity as granular invalidation is complex
+            this.traversalCache.clear();
+        }
+    }
+
     cacheRelationship(relationship: Relationship): void {
         this.queueOrExecute(() => {
             if (this.relationshipCache.size >= this.maxSize) {
