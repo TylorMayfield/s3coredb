@@ -137,6 +137,22 @@ export class CacheManager {
         }
     }
 
+    removeRelationship(from: string, to: string, type: string): void {
+        const relId = this.getRelationshipId({ from, to, type } as Relationship);
+        const cached = this.relationshipCache.get(relId);
+
+        if (cached) {
+            this.relationshipCache.delete(relId);
+            this.removeRelationshipFromIndexes(cached.relationship);
+
+            // Remove from adjacency lists
+            this.adjacencyLists.get(from)?.get(type)?.delete(to);
+            this.reverseAdjacencyLists.get(to)?.get(type)?.delete(from);
+
+            logger.debug('Removed relationship from cache', { id: relId });
+        }
+    }
+
     cacheRelationship(relationship: Relationship): void {
         this.queueOrExecute(() => {
             if (this.relationshipCache.size >= this.maxSize) {

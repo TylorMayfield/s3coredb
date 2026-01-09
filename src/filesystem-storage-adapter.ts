@@ -96,7 +96,8 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         logger.info(`Updating node with id: ${id}`);
         this.validateNodeForUpdate(updates);
 
-        const node = await this.getNode(id, auth);
+        // Fetch with admin to check existence first
+        const node = await this.getNode(id, { ...auth, isAdmin: true });
         if (!node) {
             throw new NodeNotFoundError(id);
         }
@@ -133,7 +134,8 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         await this.initialized;
         logger.info(`Deleting node with id: ${id}`);
 
-        const node = await this.getNode(id, auth);
+        // Fetch with admin to check existence first
+        const node = await this.getNode(id, { ...auth, isAdmin: true });
         if (!node) {
             throw new NodeNotFoundError(id);
         }
@@ -440,6 +442,7 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         
         try {
             await fs.unlink(filePath);
+            this.cache.removeRelationship(from, to, type);
         } catch (error) {
             throw new RelationshipNotFoundError(from, to, type);
         }

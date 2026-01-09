@@ -68,7 +68,7 @@ describe('CRUD Operations', () => {
                 type: 'secret',
                 properties: { data: 'classified' },
                 permissions: ['admin']
-            });
+            }, { userPermissions: ['admin'], isAdmin: true });
 
             const limitedAuth: AuthContext = {
                 userPermissions: ['read'],
@@ -137,7 +137,7 @@ describe('CRUD Operations', () => {
                 type: 'secret',
                 properties: { data: 'classified' },
                 permissions: ['admin']
-            });
+            }, { userPermissions: ['admin'], isAdmin: true });
 
             const limitedAuth: AuthContext = {
                 userPermissions: ['read'],
@@ -284,7 +284,7 @@ describe('CRUD Operations', () => {
         it('should reject reserved property keys', async () => {
             await expect(db.createNode({
                 type: 'user',
-                properties: { '__proto__': 'hack' },
+                properties: { 'constructor': 'hack' },
                 permissions: ['read']
             })).rejects.toThrow(ValidationError);
         });

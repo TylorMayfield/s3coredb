@@ -49,7 +49,8 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         logger.info(`Updating node with id: ${id}`);
         this.validateNodeForUpdate(updates);
 
-        const node = await this.getNode(id, auth);
+        // Fetch with admin to check existence first
+        const node = await this.getNode(id, { ...auth, isAdmin: true });
         if (!node) {
             throw new NodeNotFoundError(id);
         }
@@ -86,7 +87,8 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
     async deleteNode(id: string, auth: AuthContext): Promise<void> {
         logger.info(`Deleting node with id: ${id}`);
         
-        const node = await this.getNode(id, auth);
+        // Fetch with admin to check existence first
+        const node = await this.getNode(id, { ...auth, isAdmin: true });
         if (!node) {
             throw new NodeNotFoundError(id);
         }
@@ -272,7 +274,7 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         }
 
         typeMap.delete(key);
-        // Cache will expire naturally
+        this.cache.removeRelationship(from, to, type);
     }
 
     async queryRelatedNodes(

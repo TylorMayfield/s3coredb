@@ -8,10 +8,11 @@
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue)](https://www.typescriptlang.org/)
 [![Test Coverage](https://img.shields.io/badge/coverage-65%25-yellow)](./test-report.html)
+[![Roadmap](https://img.shields.io/badge/Roadmap-PRODUCT.md-ff69b4)](./PRODUCT.md)
 
 *Build scalable graph-like data structures with S3 as your backend*
 
-[Features](#-features) • [Installation](#-installation) • [Quick Start](#-quick-start) • [API](#-api-reference) • [Examples](#-examples)
+[Features](#-features) • [Installation](#-installation) • [Quick Start](#-quick-start) • [API](#-api-reference) • [Examples](#-examples) • [Roadmap](./PRODUCT.md)
 
 </div>
 
