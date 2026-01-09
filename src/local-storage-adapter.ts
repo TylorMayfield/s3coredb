@@ -49,7 +49,15 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         logger.info(`Updating node with id: ${id}`);
         this.validateNodeForUpdate(updates);
 
-        const node = await this.getNode(id, auth);
+        // Find node directly to distinguish between not found and permission denied
+        let node: Node | undefined;
+        for (const typeMap of this.storage.values()) {
+            if (typeMap.has(id)) {
+                node = typeMap.get(id);
+                break;
+            }
+        }
+
         if (!node) {
             throw new NodeNotFoundError(id);
         }
@@ -86,7 +94,15 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
     async deleteNode(id: string, auth: AuthContext): Promise<void> {
         logger.info(`Deleting node with id: ${id}`);
         
-        const node = await this.getNode(id, auth);
+        // Find node directly to distinguish between not found and permission denied
+        let node: Node | undefined;
+        for (const typeMap of this.storage.values()) {
+            if (typeMap.has(id)) {
+                node = typeMap.get(id);
+                break;
+            }
+        }
+
         if (!node) {
             throw new NodeNotFoundError(id);
         }
@@ -272,7 +288,7 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         }
 
         typeMap.delete(key);
-        // Cache will expire naturally
+        this.cache.removeRelationship({ from, to, type } as Relationship);
     }
 
     async queryRelatedNodes(
@@ -317,6 +333,13 @@ class LocalStorageAdapter extends BaseStorageAdapter implements StorageAdapter {
         if (!filter) return {};
         
         const query: any = {};
+
+        // Handle direct field filter
+        if (filter.field && filter.operator === 'eq') {
+            query[filter.field] = filter.value;
+        }
+
+        // Handle nested filters
         if (filter.filters) {
             for (const f of filter.filters) {
                 if (f.field && f.operator === 'eq') {

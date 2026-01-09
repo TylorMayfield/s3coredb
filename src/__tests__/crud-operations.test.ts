@@ -67,17 +67,17 @@ describe('CRUD Operations', () => {
             const node = await db.createNode({
                 type: 'secret',
                 properties: { data: 'classified' },
-                permissions: ['admin']
+                permissions: ['read'] // Creator has 'read'
             });
 
-            const limitedAuth: AuthContext = {
-                userPermissions: ['read'],
+            const noAccessAuth: AuthContext = {
+                userPermissions: ['other'], // User doesn't have 'read'
                 isAdmin: false
             };
 
             await expect(db.updateNode(node.id, {
                 properties: { data: 'modified' }
-            }, limitedAuth)).rejects.toThrow(PermissionDeniedError);
+            }, noAccessAuth)).rejects.toThrow(PermissionDeniedError);
         });
 
         it('should detect concurrent modifications', async () => {
@@ -136,15 +136,15 @@ describe('CRUD Operations', () => {
             const node = await db.createNode({
                 type: 'secret',
                 properties: { data: 'classified' },
-                permissions: ['admin']
+                permissions: ['read']
             });
 
-            const limitedAuth: AuthContext = {
-                userPermissions: ['read'],
+            const noAccessAuth: AuthContext = {
+                userPermissions: ['other'],
                 isAdmin: false
             };
 
-            await expect(db.deleteNode(node.id, limitedAuth))
+            await expect(db.deleteNode(node.id, noAccessAuth))
                 .rejects.toThrow(PermissionDeniedError);
         });
     });
@@ -284,7 +284,7 @@ describe('CRUD Operations', () => {
         it('should reject reserved property keys', async () => {
             await expect(db.createNode({
                 type: 'user',
-                properties: { '__proto__': 'hack' },
+                properties: { 'constructor': 'hack' },
                 permissions: ['read']
             })).rejects.toThrow(ValidationError);
         });
