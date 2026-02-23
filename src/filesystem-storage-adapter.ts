@@ -6,7 +6,7 @@ import * as path from 'path';
 import { BaseStorageAdapter } from "./base-storage-adapter";
 import { glob } from 'glob';
 import { promisify } from 'util';
-import { NodeNotFoundError, PermissionDeniedError, RelationshipNotFoundError, ConcurrentModificationError } from './errors';
+import { NodeNotFoundError, PermissionDeniedError, RelationshipNotFoundError, ConcurrentModificationError, DuplicateRelationshipError } from './errors';
 import { validateQueryLimit } from './validator';
 
 const mkdir = promisify(fs.mkdir);
@@ -325,26 +325,42 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
                     return filter.filters.every((f: any) => this.matchesFilterCondition(node, f));
                 } else if (filter.logic === 'or') {
                     return filter.filters.some((f: any) => this.matchesFilterCondition(node, f));
+                } else if (filter.logic === 'not') {
+                    return filter.filters.length > 0 && !this.matchesFilterCondition(node, filter.filters[0]);
                 }
             }
             return false;
         }
 
         const value = this.getPropertyValue(node, filter.field);
-        if (value == null) return false;
 
         switch (filter.operator) {
             case 'eq':
                 return value === filter.value;
+            case 'neq':
+                return value !== filter.value;
             case 'gt':
-                return typeof value === 'number' && value > filter.value;
+                return value != null && typeof value === 'number' && value > filter.value;
+            case 'gte':
+                return value != null && typeof value === 'number' && value >= filter.value;
             case 'lt':
-                return typeof value === 'number' && value < filter.value;
+                return value != null && typeof value === 'number' && value < filter.value;
+            case 'lte':
+                return value != null && typeof value === 'number' && value <= filter.value;
+            case 'in':
+                return Array.isArray(filter.value) && filter.value.includes(value);
+            case 'nin':
+                return Array.isArray(filter.value) && !filter.value.includes(value);
             case 'contains':
+                if (value == null) return false;
                 if (Array.isArray(value)) {
                     return value.includes(filter.value);
                 }
                 return typeof value === 'string' && value.includes(filter.value);
+            case 'startsWith':
+                return value != null && typeof value === 'string' && value.startsWith(filter.value);
+            case 'endsWith':
+                return value != null && typeof value === 'string' && value.endsWith(filter.value);
             default:
                 return false;
         }
@@ -371,8 +387,19 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
         
         // Ensure all parent directories exist
         await fs.mkdir(dirPath, { recursive: true });
-        
-        await fs.writeFile(filePath, JSON.stringify(relationship, null, 2));
+
+        // Use exclusive open (wx flag) to atomically detect duplicate relationships.
+        // If the file already exists this throws with code EEXIST.
+        try {
+            const fh = await fs.open(filePath, 'wx');
+            await fh.writeFile(JSON.stringify(relationship, null, 2));
+            await fh.close();
+        } catch (err: any) {
+            if (err.code === 'EEXIST') {
+                throw new DuplicateRelationshipError(relationship.from, relationship.to, relationship.type);
+            }
+            throw err;
+        }
     }
 
     async updateRelationship(from: string, to: string, type: string, updates: Partial<Relationship>, auth: AuthContext): Promise<void> {
@@ -520,23 +547,29 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
     private convertFilterToQuery(filter?: QueryOptions['filter']): any {
         if (!filter) return {};
         
-        const query: any = {};
-        
-        // Handle direct field filter
-        if (filter.field && filter.operator === 'eq') {
-            query[filter.field] = filter.value;
-        }
-        
-        // Handle nested filters
-        if (filter.filters) {
-            for (const f of filter.filters) {
-                if (f.field && f.operator === 'eq') {
-                    query[f.field] = f.value;
+        // For logic operators (or/not/and with multiple conditions), we must query
+        // all nodes and let matchesFilterCondition evaluate the full expression.
+        // Only extract a simple type equality from a top-level eq filter for performance.
+        if (filter.logic) {
+            // 'and' allows safe type pre-filtering only when one condition is type=eq
+            if (filter.logic === 'and' && filter.filters) {
+                for (const f of filter.filters) {
+                    if (f.field === 'type' && f.operator === 'eq') {
+                        return { type: f.value };
+                    }
                 }
             }
+            // For 'or' and 'not', querying a subset first would miss nodes that satisfy
+            // the broader condition, so return empty query to fetch all nodes.
+            return {};
         }
         
-        return query;
+        // Handle direct field filter (only eq is safe for pre-filtering)
+        if (filter.field && filter.operator === 'eq') {
+            return { [filter.field]: filter.value };
+        }
+        
+        return {};
     }
 
     private generateId(): string {

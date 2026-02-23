@@ -339,6 +339,15 @@ export abstract class BaseStorageAdapter implements StorageAdapter {
         this.cache.clear();
     }
 
+    /**
+     * Stop the cache's internal cleanup timer.
+     * Call this during shutdown or in tests to prevent the timer from keeping
+     * the process alive.
+     */
+    destroyCache(): void {
+        this.cache.destroy();
+    }
+
     protected async queryRelatedNodesWithCache(
         from: string,
         type: string,
