@@ -556,34 +556,38 @@ export class CacheManager {
     /**
      * Evict all entries whose TTL has expired from all caches.
      * Called automatically every CLEANUP_INTERVAL_MS by the internal timer.
+     * Eviction is deferred via queueOrExecute so it respects batchMode —
+     * if a batch is in progress the eviction runs after commitBatch().
      */
     evictExpired(): void {
         const now = Date.now();
 
-        for (const [id, entry] of this.nodeCache.entries()) {
-            if (now - entry.timestamp > this.ttl) {
-                this.nodeCache.delete(id);
-                this.removeNodeFromIndexes(entry.node);
+        this.queueOrExecute(() => {
+            for (const [id, entry] of this.nodeCache.entries()) {
+                if (now - entry.timestamp > this.ttl) {
+                    this.nodeCache.delete(id);
+                    this.removeNodeFromIndexes(entry.node);
+                }
             }
-        }
 
-        for (const [id, entry] of this.relationshipCache.entries()) {
-            if (now - entry.timestamp > this.ttl) {
-                this.relationshipCache.delete(id);
-                this.removeRelationshipFromIndexes(entry.relationship);
+            for (const [id, entry] of this.relationshipCache.entries()) {
+                if (now - entry.timestamp > this.ttl) {
+                    this.relationshipCache.delete(id);
+                    this.removeRelationshipFromIndexes(entry.relationship);
+                }
             }
-        }
 
-        for (const [key, entry] of this.traversalCache.entries()) {
-            if (now - entry.timestamp > this.ttl) {
-                this.traversalCache.delete(key);
+            for (const [key, entry] of this.traversalCache.entries()) {
+                if (now - entry.timestamp > this.ttl) {
+                    this.traversalCache.delete(key);
+                }
             }
-        }
 
-        logger.debug('Expired cache entries evicted', {
-            nodeCacheSize: this.nodeCache.size,
-            relationshipCacheSize: this.relationshipCache.size,
-            traversalCacheSize: this.traversalCache.size
+            logger.debug('Expired cache entries evicted', {
+                nodeCacheSize: this.nodeCache.size,
+                relationshipCacheSize: this.relationshipCache.size,
+                traversalCacheSize: this.traversalCache.size
+            });
         });
     }
 

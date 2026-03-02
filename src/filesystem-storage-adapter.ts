@@ -7,7 +7,7 @@ import { BaseStorageAdapter } from "./base-storage-adapter";
 import { glob } from 'glob';
 import { promisify } from 'util';
 import { NodeNotFoundError, PermissionDeniedError, RelationshipNotFoundError, ConcurrentModificationError, DuplicateRelationshipError } from './errors';
-import { validateQueryLimit } from './validator';
+import { validateQueryLimit, Validator } from './validator';
 
 const mkdir = promisify(fs.mkdir);
 const writeFile = promisify(fs.writeFile);
@@ -338,6 +338,7 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
             case 'eq':
                 return value === filter.value;
             case 'neq':
+                if (value == null) return false;
                 return value !== filter.value;
             case 'gt':
                 return value != null && typeof value === 'number' && value > filter.value;
@@ -348,8 +349,10 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
             case 'lte':
                 return value != null && typeof value === 'number' && value <= filter.value;
             case 'in':
+                if (value == null) return false;
                 return Array.isArray(filter.value) && filter.value.includes(value);
             case 'nin':
+                if (value == null) return false;
                 return Array.isArray(filter.value) && !filter.value.includes(value);
             case 'contains':
                 if (value == null) return false;
@@ -368,7 +371,9 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
 
     async createRelationship(relationship: Relationship, auth: AuthContext): Promise<void> {
         await this.initialized;
-        this.validateRelationship(relationship);
+        // Validate without caching — cache update only happens after the write succeeds
+        // to prevent a failed duplicate create from polluting the cache.
+        Validator.validateRelationship(relationship);
         logger.info(`Creating relationship from ${relationship.from} to ${relationship.to} of type ${relationship.type}`);
         
         const fromNode = await this.getNode(relationship.from, auth);
@@ -390,16 +395,33 @@ class FileSystemStorageAdapter extends BaseStorageAdapter implements StorageAdap
 
         // Use exclusive open (wx flag) to atomically detect duplicate relationships.
         // If the file already exists this throws with code EEXIST.
+        let fh: fs.FileHandle | undefined;
         try {
-            const fh = await fs.open(filePath, 'wx');
+            fh = await fs.open(filePath, 'wx');
             await fh.writeFile(JSON.stringify(relationship, null, 2));
-            await fh.close();
         } catch (err: any) {
-            if (err.code === 'EEXIST') {
+            if (err && err.code === 'EEXIST') {
                 throw new DuplicateRelationshipError(relationship.from, relationship.to, relationship.type);
             }
+            // Clean up any partially written file on write failures.
+            try {
+                await fs.unlink(filePath);
+            } catch {
+                // Ignore cleanup errors.
+            }
             throw err;
+        } finally {
+            if (fh) {
+                try {
+                    await fh.close();
+                } catch {
+                    // Ignore close errors to avoid masking the original error.
+                }
+            }
         }
+
+        // Cache only after successful write
+        this.cache.cacheRelationship(relationship);
     }
 
     async updateRelationship(from: string, to: string, type: string, updates: Partial<Relationship>, auth: AuthContext): Promise<void> {
