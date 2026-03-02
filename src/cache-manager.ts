@@ -32,6 +32,8 @@ export class CacheManager {
     private batchMode = false;
     private batchQueue: Array<() => void> = [];
     private traversalStats: Map<string, { hits: number; misses: number; avgResponseTime: number }> = new Map();
+    private cleanupInterval: NodeJS.Timeout | null = null;
+    private readonly CLEANUP_INTERVAL_MS = 60 * 1000; // Run cleanup every 60 seconds
     private dbCacheConfig: DBCacheConfig = {
         enabled: false,
         directory: '',
@@ -60,6 +62,13 @@ export class CacheManager {
         // Initialize configured indexes
         if (options.indexes) {
             this.initializeConfiguredIndexes(options.indexes);
+        }
+
+        // Start periodic TTL cleanup
+        this.cleanupInterval = setInterval(() => this.evictExpired(), this.CLEANUP_INTERVAL_MS);
+        // Allow the process to exit even if this interval is active
+        if (this.cleanupInterval.unref) {
+            this.cleanupInterval.unref();
         }
     }
 
@@ -542,6 +551,56 @@ export class CacheManager {
         this.traversalCache.clear(); // Clear traversal cache as well
         this.adjacencyLists.clear();
         this.reverseAdjacencyLists.clear();
+    }
+
+    /**
+     * Evict all entries whose TTL has expired from all caches.
+     * Called automatically every CLEANUP_INTERVAL_MS by the internal timer.
+     * Eviction is deferred via queueOrExecute so it respects batchMode —
+     * if a batch is in progress the eviction runs after commitBatch().
+     */
+    evictExpired(): void {
+        const now = Date.now();
+
+        this.queueOrExecute(() => {
+            for (const [id, entry] of this.nodeCache.entries()) {
+                if (now - entry.timestamp > this.ttl) {
+                    this.nodeCache.delete(id);
+                    this.removeNodeFromIndexes(entry.node);
+                }
+            }
+
+            for (const [id, entry] of this.relationshipCache.entries()) {
+                if (now - entry.timestamp > this.ttl) {
+                    this.relationshipCache.delete(id);
+                    this.removeRelationshipFromIndexes(entry.relationship);
+                }
+            }
+
+            for (const [key, entry] of this.traversalCache.entries()) {
+                if (now - entry.timestamp > this.ttl) {
+                    this.traversalCache.delete(key);
+                }
+            }
+
+            logger.debug('Expired cache entries evicted', {
+                nodeCacheSize: this.nodeCache.size,
+                relationshipCacheSize: this.relationshipCache.size,
+                traversalCacheSize: this.traversalCache.size
+            });
+        });
+    }
+
+    /**
+     * Stop the periodic cleanup timer. Should be called when the cache is no
+     * longer needed (e.g., during shutdown or in tests) to prevent the timer
+     * from keeping the process alive.
+     */
+    destroy(): void {
+        if (this.cleanupInterval) {
+            clearInterval(this.cleanupInterval);
+            this.cleanupInterval = null;
+        }
     }
 
     private async persistDatabaseCache(): Promise<void> {

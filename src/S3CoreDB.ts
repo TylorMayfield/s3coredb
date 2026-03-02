@@ -133,6 +133,17 @@ class S3CoreDB {
     return this.storage.deleteRelationship(from, to, type, authContext);
   }
 
+  async createNodesBulk(
+    nodes: Array<{ type: string; properties: any; permissions: string[] }>,
+    auth?: AuthContext
+  ): Promise<Node[]> {
+    return Promise.all(nodes.map(node => this.createNode(node, auth)));
+  }
+
+  async createRelationshipsBulk(relationships: Relationship[], auth?: AuthContext): Promise<void> {
+    await Promise.all(relationships.map(rel => this.createRelationship(rel, auth)));
+  }
+
   async queryRelatedNodes(
     from: string,
     type: string,
